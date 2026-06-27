@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.1
+- Fix: `coldspot-bpf` ignored the installer's `COLDSPOT_BPF_DIR`, so the eBPF
+  core failed to build during install (`clang: no such file or directory:
+  'coldspot.bpf.c'`). Source-dir resolution now honors the env var first, then
+  falls back to the repo and installed layouts. v0 metering was unaffected; this
+  restores the per-app/flows/fused-siege core and the `coldspot-bpf load` path.
+
+## 0.1.0
 First scaffold.
 
 - `coldspotd`: v0 meter — `/proc/net/dev` interface total + systemd per-unit IP

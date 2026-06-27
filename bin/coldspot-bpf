@@ -16,8 +16,18 @@ set -euo pipefail
 
 PIN="/sys/fs/bpf/coldspot"
 CGROOT="/sys/fs/cgroup"
-SRC_DIR="${COLDSPOT_BPF_DIR:-/usr/local/share/coldspot/bpf}"
-[[ -f "$SRC_DIR/coldspot.bpf.o" ]] || SRC_DIR="$(cd "$(dirname "$(readlink -f "$0")")/../bpf" 2>/dev/null && pwd || echo .)"
+# Resolve where the bpf sources/object live: an explicit COLDSPOT_BPF_DIR always
+# wins (the installer sets it); otherwise try the repo layout (bin/../bpf) then
+# the installed layout (bin/../share/coldspot/bpf), falling back to the default.
+if [[ -n "${COLDSPOT_BPF_DIR:-}" ]]; then
+  SRC_DIR="$COLDSPOT_BPF_DIR"
+else
+  _self="$(dirname "$(readlink -f "$0")")"
+  SRC_DIR="/usr/local/share/coldspot/bpf"
+  for _c in "$_self/../bpf" "$_self/../share/coldspot/bpf"; do
+    [[ -f "$_c/coldspot.bpf.c" ]] && { SRC_DIR="$(cd "$_c" && pwd)"; break; }
+  done
+fi
 OBJ="$SRC_DIR/coldspot.bpf.o"
 
 require_root() { [[ $EUID -eq 0 ]] || { echo "coldspot-bpf: needs root" >&2; exit 1; }; }
