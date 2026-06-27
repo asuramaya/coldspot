@@ -1,0 +1,19 @@
+[Unit]
+Description=coldspot — meter the cold link, publish per-app truth
+Documentation=https://github.com/asuramaya/coldspot
+After=network.target NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/coldspotd
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=coldspot
+StateDirectory=coldspot
+# v1 (BPF core) additionally needs:
+# AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_PERFMON
+# enable per-app accounting for the v0 systemd source:
+# (set DefaultIPAccounting=yes in /etc/systemd/system.conf, or per-unit)
+
+[Install]
+WantedBy=multi-user.target

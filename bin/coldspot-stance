@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# coldspot-stance — privileged enforcement helper (nft + cgroup + metered flag).
+#
+# The meter (coldspotd) only measures; this is the only piece that needs root.
+# siege uses a cgroup-v2 allowlist so "everything except the active task" needs
+# no per-app firewall rules — the active task lives in coldspot.slice and the
+# nft cgroup match passes only that subtree.
+set -euo pipefail
+
+SLICE="coldspot.slice"
+CG="/sys/fs/cgroup/${SLICE}"
+PIN="/sys/fs/bpf/coldspot"
+HOGS=(packagekit snapd)   # systemd units paused by `lean`
+SELFDIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+BPF_HELPER="$SELFDIR/coldspot-bpf"
+
+require_root() { [[ $EUID -eq 0 ]] || { echo "coldspot-stance: needs root" >&2; exit 1; }; }
+
+bpf_loaded() { [[ -e "$PIN/policy" ]]; }
+
+# When the v1 core is loaded it is the enforcer: flip the policy slot and, for
+# siege, allow the coldspot.slice cgroup id (== its dir inode) on the wire.
+bpf_apply() {
+  "$BPF_HELPER" stance "$1"
+  if [[ "$1" == "2" ]]; then
+    ensure_cgroup
+    local cgid; cgid="$(stat -c %i "$CG" 2>/dev/null || true)"
+    [[ -n "$cgid" ]] && "$BPF_HELPER" allow "$cgid" || true
+  fi
+}
+
+ensure_cgroup() {
+  [[ -d $CG ]] || mkdir -p "$CG"
+  # make sure +memory/+pids etc. is irrelevant here; we only need the dir to exist
+}
+
+nft_open() {
+  nft list table inet coldspot >/dev/null 2>&1 && nft delete table inet coldspot || true
+}
+
+nft_siege() {
+  ensure_cgroup
+  nft delete table inet coldspot 2>/dev/null || true
+  nft -f - <<EOF
+table inet coldspot {
+  chain out {
+    type filter hook output priority 0; policy drop;
+    ct state established,related accept
+    meta l4proto udp udp dport 53 accept
+    meta l4proto tcp tcp dport 53 accept
+    oif "lo" accept
+    socket cgroupv2 level 1 "$SLICE" accept
+  }
+}
+EOF
+}
+
+pause_hogs() { for u in "${HOGS[@]}"; do systemctl stop "$u" 2>/dev/null || true; done; }
+
+case "${1:-}" in
+  stance)
+    require_root
+    case "${2:-}" in open) n=0;; lean) n=1;; siege) n=2;;
+      *) echo "usage: coldspot-stance stance <open|lean|siege>" >&2; exit 1 ;;
+    esac
+    if bpf_loaded; then
+      # v1: the kernel core enforces; nft stays out of the way.
+      [[ $n == 1 ]] && pause_hogs
+      [[ $n == 0 ]] && command -v tailscale >/dev/null && tailscale up >/dev/null 2>&1 || true
+      bpf_apply "$n"
+      echo "enforcement: ${2} (bpf core)"
+    else
+      case "$2" in
+        open)
+          nft_open
+          command -v tailscale >/dev/null && tailscale up >/dev/null 2>&1 || true
+          echo "enforcement: open (all traffic permitted)"
+          ;;
+        lean)
+          nft_open
+          pause_hogs
+          command -v tailscale >/dev/null && tailscale down >/dev/null 2>&1 || true
+          echo "enforcement: lean (hogs paused, tailscale down)"
+          ;;
+        siege)
+          pause_hogs
+          nft_siege
+          echo "enforcement: siege (only $SLICE on the wire)"
+          ;;
+      esac
+    fi
+    ;;
+  allow)
+    require_root; ensure_cgroup
+    pid="${2:?usage: coldspot-stance allow <pid>}"
+    echo "$pid" > "$CG/cgroup.procs"
+    echo "allowed: pid $pid moved into $SLICE"
+    ;;
+  run)
+    require_root; ensure_cgroup; shift
+    exec systemd-run --slice="$SLICE" --scope --quiet -- "$@"
+    ;;
+  *)
+    echo "usage: coldspot-stance <stance|allow|run> ..." >&2; exit 1 ;;
+esac

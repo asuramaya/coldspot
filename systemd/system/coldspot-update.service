@@ -1,0 +1,9 @@
+[Unit]
+Description=coldspot auto-update (check GitHub releases, install newer in place)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Short-lived oneshot; the only coldspot component that reaches the internet.
+ExecStart=/usr/local/bin/coldspot-update

@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# coldspot-bpf — load/attach the v1 kernel core via bpftool (no Go, no libbpf-dev).
+#
+# Drives the cgroup/skb meter+verdict program entirely through bpftool, which is
+# the only build/runtime dep beyond clang. Programs and maps are pinned under
+# bpffs so coldspotd can read `usage` and write `policy`/`allow` by path.
+#
+#   coldspot-bpf build              compile coldspot.bpf.o from local BTF
+#   coldspot-bpf load              load + attach to the cgroup-v2 root (multi)
+#   coldspot-bpf unload            detach + unpin
+#   coldspot-bpf stance <0|1|2>    write policy slot (open/lean/siege)
+#   coldspot-bpf allow <cgid>      add a cgroup id to the siege allowlist
+#   coldspot-bpf dump              raw usage map (debug)
+set -euo pipefail
+
+PIN="/sys/fs/bpf/coldspot"
+CGROOT="/sys/fs/cgroup"
+SRC_DIR="${COLDSPOT_BPF_DIR:-/usr/local/share/coldspot/bpf}"
+[[ -f "$SRC_DIR/coldspot.bpf.o" ]] || SRC_DIR="$(cd "$(dirname "$(readlink -f "$0")")/../bpf" 2>/dev/null && pwd || echo .)"
+OBJ="$SRC_DIR/coldspot.bpf.o"
+
+require_root() { [[ $EUID -eq 0 ]] || { echo "coldspot-bpf: needs root" >&2; exit 1; }; }
+
+# u64 -> bpftool's space-separated little-endian byte list
+le64() { printf '%016x\n' "$1" | sed 's/../& /g' | awk '{for(i=NF;i>=1;i--)printf "0x%s ",$i}'; }
+
+case "${1:-}" in
+  build)
+    cd "$SRC_DIR"
+    [[ -f vmlinux.h ]] || bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+    clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -Wno-missing-declarations \
+          -I. -c coldspot.bpf.c -o coldspot.bpf.o
+    echo "built $OBJ"
+    ;;
+  load)
+    require_root
+    [[ -f "$OBJ" ]] || { echo "no $OBJ — run: coldspot-bpf build" >&2; exit 1; }
+    mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
+    rm -rf "$PIN"; mkdir -p "$PIN"
+    bpftool prog loadall "$OBJ" "$PIN" pinmaps "$PIN"
+    # `multi` so we coexist with systemd's cgroup accounting program
+    bpftool cgroup attach "$CGROOT" egress  pinned "$PIN/coldspot_egress"  multi
+    bpftool cgroup attach "$CGROOT" ingress pinned "$PIN/coldspot_ingress" multi
+    echo "loaded + attached (stance defaults to open; metering live)"
+    ;;
+  unload)
+    require_root
+    bpftool cgroup detach "$CGROOT" egress  pinned "$PIN/coldspot_egress"  2>/dev/null || true
+    bpftool cgroup detach "$CGROOT" ingress pinned "$PIN/coldspot_ingress" 2>/dev/null || true
+    rm -rf "$PIN"
+    echo "detached + unpinned"
+    ;;
+  stance)
+    require_root
+    v="${2:?usage: coldspot-bpf stance <0|1|2>}"
+    bpftool map update pinned "$PIN/policy" key 0 0 0 0 value "$v" 0 0 0
+    echo "policy -> $v"
+    ;;
+  allow)
+    require_root
+    cgid="${2:?usage: coldspot-bpf allow <cgroup_id>}"
+    # word-splitting is intended: le64 emits the key as separate byte args
+    # shellcheck disable=SC2046
+    bpftool map update pinned "$PIN/allow" key $(le64 "$cgid") value 0x01
+    echo "allowed cgid $cgid"
+    ;;
+  dump)
+    bpftool map dump pinned "$PIN/usage" -j 2>/dev/null || { echo "core not loaded"; exit 1; }
+    ;;
+  *)
+    echo "usage: coldspot-bpf <build|load|unload|stance|allow|dump>" >&2; exit 1 ;;
+esac

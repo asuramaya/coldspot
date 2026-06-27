@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 asuramaya and coldspot contributors
+"""coldspot — one human entrypoint for the cold link (mirrors `phanspeed <verb>`).
+
+  coldspot status [--json]              MB used, rate, stance, budget, top talkers
+  coldspot flows [--json]               per-destination breakdown (needs bpf core)
+  coldspot stance <open|lean|siege>     the three stances; open = no-op
+  coldspot siege                        shortcut for `stance siege`
+  coldspot budget <MB|off>              session data ceiling; meter counts toward it
+  coldspot allow <pid|name>             whitelist a task for siege (delegates to helper)
+  coldspot run -- <cmd...>              launch a task inside the coldspot cgroup
+  coldspot reset [session|day]          zero the accountant
+  coldspot update [--check|--json]      pull newer releases (auto-checked daily)
+  coldspot version | help
+"""
+import json
+import os
+import socket
+import subprocess
+import sys
+
+RUN = "/run/coldspot"
+SOCK = f"{RUN}/control.sock"
+STATUS = f"{RUN}/status.json"
+STANCE_HELPER = "coldspot-stance"  # root helper, on PATH or next to us
+STANCES = ("open", "lean", "siege")
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def _human(bps):
+    b = float(bps)
+    for u in ("B", "K", "M"):
+        if b < 1024:
+            return f"{b:.0f} {u}/s"
+        b /= 1024
+    return f"{b:.1f} G/s"
+
+
+def _sock(obj):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(3)
+    try:
+        s.connect(SOCK)
+        s.sendall(json.dumps(obj).encode() + b"\n")
+        return json.loads(s.recv(1 << 16).split(b"\n", 1)[0])
+    finally:
+        s.close()
+
+
+def _status():
+    try:
+        with open(STATUS) as f:
+            return json.load(f)
+    except OSError:
+        return None
+
+
+def _set(**kw):
+    kw["cmd"] = "set"
+    try:
+        r = _sock(kw)
+    except OSError as e:
+        sys.exit(f"cannot reach coldspotd ({e}); is the service running?")
+    if not r.get("ok"):
+        sys.exit(f"rejected: {r.get('error')}")
+    return r
+
+
+def _helper(*args):
+    """Run the privileged stance/cgroup helper (via sudo if not root)."""
+    bin_ = STANCE_HELPER
+    local = os.path.join(HERE, STANCE_HELPER)
+    if os.path.exists(local):
+        bin_ = local
+    cmd = ([] if os.geteuid() == 0 else ["sudo"]) + [bin_, *args]
+    return subprocess.call(cmd)
+
+
+def cmd_status(args):
+    st = _status()
+    if st is None:
+        sys.exit("coldspotd not running (no status).")
+    if "--json" in args:
+        print(json.dumps(st, indent=2))
+        return
+    s, d, b = st.get("session", {}), st.get("day", {}), st.get("budget", {})
+    used = b.get("used_mb", 0)
+    print(f"link    : {st.get('iface')}  "
+          f"(metered {st.get('metered')}, stance {st.get('stance')})")
+    r = st.get("rate_bps") or {}
+    if r:
+        print(f"rate    : down {_human(r.get('rx', 0))}   up {_human(r.get('tx', 0))}")
+    print(f"session : {used} MB  (rx {s.get('rx_mb', 0)} / tx {s.get('tx_mb', 0)})")
+    print(f"today   : {round(d.get('rx_mb', 0) + d.get('tx_mb', 0), 1)} MB")
+    if b.get("limit_mb"):
+        bar = {"ok": "·", "warn": "▲", "over": "⚠"}.get(b.get("state"), "")
+        arm = "  [auto-siege armed]" if st.get("auto_siege") else ""
+        print(f"budget  : {used}/{b['limit_mb']} MB  ({b.get('pct')}%) {bar}{arm}")
+    talkers = st.get("talkers") or []
+    if talkers:
+        print(f"talkers : (via {st.get('source', '?')})")
+        for t in talkers[:8]:
+            print(f"  {t['mb']:>7.1f} MB  {t['name']}")
+    else:
+        print("talkers : (none — enable systemd IPAccounting or the BPF core)")
+
+
+def cmd_flows(args):
+    st = _status()
+    if st is None:
+        sys.exit("coldspotd not running (no status).")
+    flows = st.get("flows") or []
+    if "--json" in args:
+        print(json.dumps(flows, indent=2))
+        return
+    if not flows:
+        print("no per-destination data — load the bpf core: sudo coldspot-bpf load")
+        return
+    print(f"{'MB':>8}  {'app':<14} destination")
+    for f in flows[:20]:
+        print(f"{f['mb']:>8.1f}  {f['app']:<14} {f['dst']}:{f['port']}/{f['proto']}")
+
+
+def cmd_stance(args):
+    if not args or args[0] not in STANCES:
+        sys.exit(f"usage: coldspot stance <{'|'.join(STANCES)}>")
+    name = args[0]
+    _set(stance=name)          # tell the meter
+    _helper("stance", name)    # apply enforcement (nft/cgroup/metered)
+    print(f"stance -> {name}")
+
+
+def cmd_budget(args):
+    if not args:
+        sys.exit("usage: coldspot budget <MB|off>")
+    if args[0] == "off":
+        _set(budget=None)
+        print("budget -> off")
+        return
+    try:
+        mb = int(args[0])
+    except ValueError:
+        sys.exit("budget must be an integer number of MB, or 'off'")
+    _set(budget=mb)
+    print(f"budget -> {mb} MB")
+
+
+def cmd_allow(args):
+    if not args:
+        sys.exit("usage: coldspot allow <pid|name>")
+    sys.exit(_helper("allow", args[0]))
+
+
+def cmd_run(args):
+    if not args:
+        sys.exit("usage: coldspot run -- <cmd...>")
+    if args and args[0] == "--":
+        args = args[1:]
+    sys.exit(_helper("run", *args))
+
+
+def cmd_reset(args):
+    scope = args[0] if args else "session"
+    try:
+        _sock({"cmd": "reset", "scope": scope})
+    except OSError as e:
+        sys.exit(f"cannot reach coldspotd ({e})")
+    print(f"reset -> {scope}")
+
+
+def cmd_update(args):
+    """Delegate to coldspot-update (next to us or on PATH). --check/--json pass
+    through; a bare `update` installs in place via sudo when newer."""
+    check = "--check" in args or "--json" in args
+    for u in (os.path.join(HERE, "coldspot-update"), "coldspot-update"):
+        try:
+            # the installer re-execs with sudo itself; --check/--json never need root
+            cmd = ([] if (check or os.geteuid() == 0) else ["sudo"]) + [u, *args]
+            sys.exit(subprocess.call(cmd))
+        except FileNotFoundError:
+            continue
+    sys.exit("coldspot-update not found; reinstall coldspot.")
+
+
+def cmd_version(args):
+    for p in (os.path.join(HERE, "..", "share", "coldspot", "VERSION"),
+              "/usr/local/share/coldspot/VERSION",
+              "/usr/share/coldspot/VERSION",
+              os.path.join(HERE, "..", "VERSION")):
+        try:
+            print("coldspot", open(p).read().strip())
+            return
+        except OSError:
+            continue
+    print("coldspot (unknown version)")
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        print(__doc__.strip())
+        return
+    verb, rest = argv[0], argv[1:]
+    table = {
+        "status": cmd_status, "flows": cmd_flows, "stance": cmd_stance,
+        "budget": cmd_budget, "allow": cmd_allow, "run": cmd_run,
+        "reset": cmd_reset, "version": cmd_version,
+        "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),
+        "siege": lambda a: cmd_stance(["siege"]),
+    }
+    fn = table.get(verb)
+    if not fn:
+        sys.exit(f"unknown verb '{verb}' (try: coldspot help)")
+    fn(rest)
+
+
+if __name__ == "__main__":
+    main()

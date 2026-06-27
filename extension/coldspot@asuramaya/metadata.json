@@ -1,0 +1,8 @@
+{
+  "uuid": "coldspot@asuramaya",
+  "name": "coldspot",
+  "description": "Cold-link pill: MB used, budget, and stance in the top bar. Reads /run/coldspot/status.json.",
+  "shell-version": ["45", "46", "47", "48"],
+  "url": "https://github.com/asuramaya/coldspot",
+  "version": 1
+}

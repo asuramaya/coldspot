@@ -1,0 +1,7 @@
+# /etc/coldspot.conf — coldspot daemon config (key = value; reloaded on any
+# `coldspot stance`/`budget`/`reset`, no restart needed).
+
+# Auto-escalate to siege the moment the session budget is exceeded. The latch
+# clears when you set a stance, change the budget, or reset the meter — so you
+# stay in siege until you explicitly act, then it can re-arm.
+auto_siege = off

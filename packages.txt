@@ -1,0 +1,7 @@
+# Runtime (v0): python3, nftables, systemd, NetworkManager (nmcli)
+python3
+nftables
+# Optional v0 niceties (per-app talkers / live rates if present):
+#   bandwhich  nethogs
+# Build-time, v1 BPF core only:
+#   clang  libbpf-dev  bpftool  linux-tools-common  golang  (cilium/ebpf)

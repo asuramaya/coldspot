@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 asuramaya and coldspot contributors
+# coldspot-update — check GitHub for newer releases and install them in place.
+#
+# coldspot is a source/tarball install (binaries in /usr/local/bin), so updating
+# means re-running the latest, checksum-verified installer — the same path a
+# fresh `curl | bash` takes. That is safe to do in place (no .deb shadowing like
+# phanspeed), which is why install.sh enables the daily timer that runs this.
+#
+#   coldspot-update            install if a newer release exists
+#   coldspot-update --check    report only, don't install
+#   coldspot-update --json     machine-readable {current,latest,available}
+# Intended to run from coldspot-update.timer (daily) as root.
+set -uo pipefail
+
+REPO="asuramaya/coldspot"
+VERSION_FILE="/usr/local/share/coldspot/VERSION"
+
+installed_version() {
+  tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null \
+    || coldspot version 2>/dev/null | awk '{print $2}'
+}
+
+latest_release_version() {
+  command -v curl >/dev/null 2>&1 || return 1
+  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+    | grep -m1 '"tag_name"' | cut -d'"' -f4 | sed 's/^v//'
+}
+
+version_gt() {  # true only when $1 is strictly newer than $2
+  [[ "$1" != "$2" ]] && [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" ]]
+}
+
+cur="$(installed_version)"
+latest="$(latest_release_version)"
+mode="${1:-}"
+
+if [[ "$mode" == "--json" ]]; then
+  avail=false
+  [[ -n "$latest" ]] && version_gt "$latest" "$cur" && avail=true
+  printf '{"current":"%s","latest":%s,"available":%s}\n' \
+    "$cur" "$([[ -n "$latest" ]] && printf '"%s"' "$latest" || echo null)" "$avail"
+  exit 0
+fi
+
+if [[ -z "$latest" ]]; then
+  echo "update check failed (offline?)."
+  exit 0
+fi
+if ! version_gt "$latest" "$cur"; then
+  echo "coldspot is up to date (installed ${cur:-unknown}, latest ${latest})."
+  exit 0
+fi
+
+echo "update available: ${cur:-unknown} -> ${latest}"
+[[ "$mode" == "--check" ]] && exit 0
+
+echo "updating coldspot ${cur:-unknown} -> ${latest} ..."
+# Re-run the latest installer; it fetches + checksum-verifies the release tarball
+# and re-execs itself with sudo as needed.
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/install.sh" | bash
