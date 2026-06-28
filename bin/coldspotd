@@ -188,11 +188,31 @@ def enforce(stance):
     return False
 
 
+_ip_accounting = None
+
+
+def _ip_accounting_on():
+    """Cached check: is systemd IP accounting on at all? If not, skip the
+    per-unit `systemctl show` polling entirely — it's the daemon's main idle
+    cost and returns nothing when accounting is off (the default)."""
+    global _ip_accounting
+    if _ip_accounting is None:
+        try:
+            out = subprocess.run(["systemctl", "show", "-p", "DefaultIPAccounting"],
+                                 capture_output=True, text=True, timeout=2).stdout
+            _ip_accounting = out.strip().endswith("=yes")
+        except Exception:
+            _ip_accounting = False
+    return _ip_accounting
+
+
 def read_app_usage():
     """Per-app rx/tx from systemd IP accounting. Empty if not enabled.
 
     v0 fallback for when the BPF core isn't loaded.
     """
+    if not _ip_accounting_on():
+        return []
     talkers = []
     try:
         units = subprocess.run(

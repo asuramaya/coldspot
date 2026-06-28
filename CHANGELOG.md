@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+- Fix: the installer's sudoers step used `install -m 0440 /dev/stdin ...`, which
+  fails under sudo (`install: No such file or directory`) and aborted the install
+  before the systemd/pill steps. Now writes the file directly, validates it with
+  `visudo -cf`, then moves it into place — a malformed sudoers can never land.
+- Perf: `coldspotd` no longer spawns `systemctl show` per running unit every few
+  seconds when systemd IP accounting is off (the default). It checks once and
+  skips — cutting idle CPU/battery cost. (BPF and enabled-accounting paths
+  unchanged.)
+
 ## 0.1.1
 - Fix: `coldspot-bpf` ignored the installer's `COLDSPOT_BPF_DIR`, so the eBPF
   core failed to build during install (`clang: no such file or directory:

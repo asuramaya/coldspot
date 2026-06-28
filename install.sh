@@ -88,10 +88,19 @@ fi
 # 3. default config (kept across reinstalls)
 [[ -f /etc/coldspot.conf ]] || install -Dm644 "$SRC/config/coldspot.conf.example" /etc/coldspot.conf
 
-# 4. let `coldspot stance`/the loader call the root helpers without a prompt
-install -m 0440 /dev/stdin /etc/sudoers.d/coldspot <<EOF
+# 4. let `coldspot stance`/the loader call the root helpers without a prompt.
+# Write the file directly (install reading /dev/stdin is fragile under sudo) and
+# validate it before keeping it, so a bad sudoers can never lock out sudo.
+cat > /etc/sudoers.d/coldspot.tmp <<EOF
 %sudo ALL=(root) NOPASSWD: $BINDIR/coldspot-stance, $BINDIR/coldspot-bpf
 EOF
+chmod 0440 /etc/sudoers.d/coldspot.tmp
+if visudo -cf /etc/sudoers.d/coldspot.tmp >/dev/null 2>&1; then
+  mv -f /etc/sudoers.d/coldspot.tmp /etc/sudoers.d/coldspot
+else
+  rm -f /etc/sudoers.d/coldspot.tmp
+  echo "   WARN sudoers validation failed; skipped (coldspot stance/bpf will prompt for sudo)"
+fi
 
 # 5. systemd: meter daemon + daily auto-update timer
 echo "-- systemd units + enabling"
