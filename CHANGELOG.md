@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9
+- Accounting + siege now apply only to the metered link (task 2). The daemon
+  writes the metered ifindex into a `cfg` BPF map; the core ignores and passes
+  traffic on other interfaces, so talkers/flows match the budget instead of
+  counting docker/ethernet/loopback. DNS capture stays global (it needs the
+  loopback resolver-stub responses). Falls back to all-interfaces if unset.
+
 ## 0.1.8
 - Fix siege (was broken end-to-end, now verified). Three bugs:
   1. The BPF allow-list matched the exact cgroup id of `coldspot.slice`, but

@@ -162,6 +162,15 @@ struct {
   __type(value, struct siege_cfg);
 } siege SEC(".maps");
 
+// metered interface ifindex (set by the daemon). When nonzero, accounting and
+// siege apply only to that link — other interfaces don't cost hotspot data.
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u32);
+} cfg SEC(".maps");
+
 // per-destination accounting: parse IPv4 + TCP/UDP via skb_load_bytes (runtime
 // offsets are fine through the helper — no direct-access bounds gymnastics).
 static __always_inline void account_flow(struct __sk_buff *skb, __u64 cg,
@@ -213,6 +222,11 @@ static __always_inline void account_flow(struct __sk_buff *skb, __u64 cg,
 }
 
 static __always_inline int verdict(struct __sk_buff *skb, int egress) {
+  // accounting + siege apply only to the metered link (if the daemon set one);
+  // traffic on other interfaces is ignored and passed (it costs no hotspot data)
+  __u32 k0 = 0, *mif = bpf_map_lookup_elem(&cfg, &k0);
+  if (mif && *mif && skb->ifindex != *mif) return 1;
+
   __u64 cg = bpf_skb_cgroup_id(skb);
 
   // account first — we want truth even for packets we are about to drop

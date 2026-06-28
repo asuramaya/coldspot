@@ -28,6 +28,7 @@ BPF_USAGE = "/sys/fs/bpf/coldspot/usage"  # v1 core's per-cgroup map (if loaded)
 BPF_FLOWS = "/sys/fs/bpf/coldspot/flows"  # per-destination breakdown (if loaded)
 BPF_DNS = "/sys/fs/bpf/coldspot/dns"      # captured DNS responses (if loaded)
 BPF_PROC = "/sys/fs/bpf/coldspot/proc_usage"  # per-process bytes (if loaded)
+BPF_CFG = "/sys/fs/bpf/coldspot/cfg"      # metered ifindex (set by us, if loaded)
 CONF = "/etc/coldspot.conf"
 SAMPLE = 2.0  # seconds between samples
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -329,6 +330,22 @@ def _ip_accounting_on():
     return _ip_accounting
 
 
+def set_metered_cfg(iface):
+    """Tell the BPF core which ifindex is metered, so accounting + siege apply
+    only to that link. Idempotent; no-op if the core isn't loaded."""
+    if not os.path.exists(BPF_CFG):
+        return
+    try:
+        idx = socket.if_nametoindex(iface)
+    except OSError:
+        return
+    b = idx.to_bytes(4, "little")
+    subprocess.run(["bpftool", "map", "update", "pinned", BPF_CFG,
+                    "key", "0", "0", "0", "0", "value",
+                    *(f"0x{x:02x}" for x in b)],
+                   capture_output=True, timeout=3)
+
+
 def read_proc_usage():
     """Per-process rx/tx from the v1 BPF `proc_usage` map (keyed by comm).
     None if the core isn't loaded. Preferred talker source — it splits catch-all
@@ -517,6 +534,7 @@ def main():
                     talkers, src = read_app_usage(), "systemd"
             read_dns_names(dns_names)
             flows = read_flows(dns_names) or []
+            set_metered_cfg(iface)   # keep the core pinned to the metered link
 
         # 5) budget + publish
         used_mb = (sess["rx"] + sess["tx"]) / 1e6
