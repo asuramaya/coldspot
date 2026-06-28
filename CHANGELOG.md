@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3
+- Pill is now an interactive control, not just a readout: live ↓/↑ rate in the
+  header, a one-click stance switcher (open/lean/siege, current one dotted),
+  top-5 talkers, and a reset-session action. Stances apply via the `coldspot`
+  CLI (NOPASSWD helper / bpf policy).
+- Daemon un-escapes systemd cgroup names (`hector\x2dvector` -> `hector-vector`)
+  so app/talker names read cleanly in `status`, `flows`, and the pill.
+
 ## 0.1.2
 - Fix: the installer's sudoers step used `install -m 0440 /dev/stdin ...`, which
   fails under sudo (`install: No such file or directory`) and aborted the install

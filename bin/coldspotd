@@ -14,6 +14,7 @@ replaces source #1 at v1 with fused metering + siege verdict. Userspace seam
 import glob
 import json
 import os
+import re
 import socket
 import subprocess
 import time
@@ -239,8 +240,15 @@ def read_app_usage():
     return talkers[:12]
 
 
+_SYSTEMD_ESC = re.compile(r"\\x([0-9a-fA-F]{2})")
+
+
 def _pretty(unit):
-    n = unit.removesuffix(".scope").removesuffix(".service")
+    n = unit
+    for suf in (".scope", ".service", ".slice"):
+        n = n.removesuffix(suf)
+    # systemd escapes '-' (and others) as \x2d in cgroup names — undo it
+    n = _SYSTEMD_ESC.sub(lambda m: chr(int(m.group(1), 16)), n)
     if n.startswith("app-"):  # app-gnome-firefox-1234 -> firefox
         parts = n.split("-")
         if len(parts) >= 3:
