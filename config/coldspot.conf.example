@@ -5,3 +5,7 @@
 # clears when you set a stance, change the budget, or reset the meter — so you
 # stay in siege until you explicitly act, then it can re-arm.
 auto_siege = off
+
+# Units the `lean` stance pauses (space-separated). Uncomment to override the
+# default (packagekit snapd fwupd-refresh unattended-upgrades).
+# lean_hogs = packagekit snapd fwupd-refresh unattended-upgrades

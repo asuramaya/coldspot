@@ -185,8 +185,11 @@ def _parse_dns(buf):
     return out
 
 
+DNS_TTL = 1800.0  # forget a name if its IP hasn't been re-seen in 30 min
+
+
 def read_dns_names(cache):
-    """Poll the BPF `dns` ring, parse responses, fill cache[ip] = hostname."""
+    """Poll the BPF `dns` ring, parse responses, fill cache[ip] = (host, ts)."""
     if not os.path.exists(BPF_DNS):
         return
     try:
@@ -195,6 +198,7 @@ def read_dns_names(cache):
             capture_output=True, text=True, timeout=3).stdout)
     except Exception:
         return
+    now = time.monotonic()
     for r in rows:
         val = r.get("value")
         if not (isinstance(val, list) and len(val) >= 4):
@@ -205,10 +209,14 @@ def read_dns_names(cache):
         buf = bytes(int(b, 16) for b in val[4:4 + ln])
         for name, ip in _parse_dns(buf):
             if name:
-                cache[ip] = name
-    if len(cache) > 4096:  # bound the cache
-        for k in list(cache)[:len(cache) - 4096]:
-            del cache[k]
+                cache[ip] = (name, now)
+    # expire stale names (recycled IPs), then bound the cache (drop oldest)
+    for ip in [k for k, (_, ts) in cache.items() if now - ts > DNS_TTL]:
+        del cache[ip]
+    if len(cache) > 4096:
+        for ip, _ in sorted(cache.items(),
+                            key=lambda kv: kv[1][1])[:len(cache) - 4096]:
+            del cache[ip]
 
 
 def _external(ip):
@@ -277,8 +285,9 @@ def read_flows(names=None):
         mb = (_le(val[0:8]) + _le(val[8:16])) / 1e6
         if mb <= 0 or not _external(ip):
             continue
+        ent = (names or {}).get(ip)
         out.append({"app": comm,
-                    "dst": ip, "host": (names or {}).get(ip), "port": port,
+                    "dst": ip, "host": ent[0] if ent else None, "port": port,
                     "proto": {6: "tcp", 17: "udp"}.get(proto, str(proto)),
                     "mb": round(mb, 1)})
     out.sort(key=lambda f: f["mb"], reverse=True)

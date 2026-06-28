@@ -11,7 +11,11 @@ set -euo pipefail
 SLICE="coldspot.slice"
 CG="/sys/fs/cgroup/${SLICE}"
 PIN="/sys/fs/bpf/coldspot"
-HOGS=(packagekit snapd)   # systemd units paused by `lean`
+# systemd units `lean` pauses (data hogs). Override in /etc/coldspot.conf:
+#   lean_hogs = packagekit snapd fwupd-refresh ...
+HOGS=(packagekit snapd fwupd-refresh unattended-upgrades)
+_conf_hogs="$(sed -n 's/^[[:space:]]*lean_hogs[[:space:]]*=[[:space:]]*//p' /etc/coldspot.conf 2>/dev/null | tail -1)"
+[[ -n "$_conf_hogs" ]] && read -ra HOGS <<<"$_conf_hogs"
 SELFDIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 BPF_HELPER="$SELFDIR/coldspot-bpf"
 

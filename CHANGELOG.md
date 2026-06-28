@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.11
+- DNS name cache now expires (task 6): IP->host entries drop after 30 min if not
+  re-seen, so a recycled IP can't keep a stale hostname.
+- `lean` stance pauses a fuller default hog set (packagekit, snapd, fwupd-refresh,
+  unattended-upgrades), overridable via `lean_hogs` in /etc/coldspot.conf.
+- Deferred (need provisioning/decision): GPG-signed releases (releases are
+  sha256-over-HTTPS today) and optional .deb packaging.
+
 ## 0.1.10
 - Per-process flows (task 5): flows are keyed by process (comm) instead of
   cgroup now — `curl -> github.com:443`, `chronyd -> ...:123/udp` — reusing the
