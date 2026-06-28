@@ -257,27 +257,27 @@ def read_flows(names=None):
             capture_output=True, text=True, timeout=3).stdout)
     except Exception:
         return None
-    idx = _cgroup_index()
     out = []
     for r in rows:
         key, val = r.get("key"), r.get("value")
-        if not (isinstance(key, list) and len(key) >= 29):
+        if not (isinstance(key, list) and len(key) >= 37):
             continue
         if not (isinstance(val, list) and len(val) >= 16):
             continue
-        cg = _le(key[0:8])
-        fam = int(key[28], 16)
-        ipb = bytes(int(b, 16) for b in key[8:24])
+        comm = bytes(int(b, 16) for b in key[0:16]).split(b"\x00")[0].decode(
+            "ascii", "replace") or "?"
+        fam = int(key[36], 16)
+        ipb = bytes(int(b, 16) for b in key[16:32])
         if fam == 6:
             ip = socket.inet_ntop(socket.AF_INET6, ipb)
         else:
             ip = ".".join(str(b) for b in ipb[0:4])
-        port = _le(key[24:26])
-        proto = _le(key[26:28])
+        port = _le(key[32:34])
+        proto = _le(key[34:36])
         mb = (_le(val[0:8]) + _le(val[8:16])) / 1e6
         if mb <= 0 or not _external(ip):
             continue
-        out.append({"app": _pretty(idx.get(cg, f"cg:{cg}")),
+        out.append({"app": comm,
                     "dst": ip, "host": (names or {}).get(ip), "port": port,
                     "proto": {6: "tcp", 17: "udp"}.get(proto, str(proto)),
                     "mb": round(mb, 1)})

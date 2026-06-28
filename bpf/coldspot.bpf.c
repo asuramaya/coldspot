@@ -31,7 +31,7 @@ struct {
 // per-destination breakdown — "which app talked to which remote endpoint".
 // LRU so it self-evicts; 16-byte key, no padding holes (stable for lookups).
 struct flow_key {
-  __u64 cg;        // cgroup id (the app)
+  char  comm[16];  // owning process (empty if unknown, e.g. unconnected UDP)
   __u8  ip[16];    // remote address: IPv4 in [0:4] (rest 0), or full IPv6
   __u16 port;      // remote service port, host order
   __u16 proto;     // IPPROTO_TCP / IPPROTO_UDP
@@ -76,6 +76,12 @@ SEC("cgroup/connect4")
 int coldspot_connect4(struct bpf_sock_addr *ctx) { record_proc(ctx); return 1; }
 SEC("cgroup/connect6")
 int coldspot_connect6(struct bpf_sock_addr *ctx) { record_proc(ctx); return 1; }
+// unconnected UDP (sendto without connect — STUN, some DNS/QUIC) never hits
+// connect4/6, so also record the owner on sendmsg.
+SEC("cgroup/sendmsg4")
+int coldspot_sendmsg4(struct bpf_sock_addr *ctx) { record_proc(ctx); return 1; }
+SEC("cgroup/sendmsg6")
+int coldspot_sendmsg6(struct bpf_sock_addr *ctx) { record_proc(ctx); return 1; }
 
 static __always_inline void account_proc(struct __sk_buff *skb, int egress) {
   __u64 cookie = bpf_get_socket_cookie(skb);
@@ -173,9 +179,14 @@ struct {
 
 // per-destination accounting: parse IPv4 + TCP/UDP via skb_load_bytes (runtime
 // offsets are fine through the helper — no direct-access bounds gymnastics).
-static __always_inline void account_flow(struct __sk_buff *skb, __u64 cg,
-                                         int egress) {
-  struct flow_key k = {.cg = cg};
+static __always_inline void account_flow(struct __sk_buff *skb, int egress) {
+  struct flow_key k = {};
+  __u64 cookie = bpf_get_socket_cookie(skb);     // owning process, via the
+  if (cookie) {                                  // connect-hook cookie map
+    struct procinfo *pi = bpf_map_lookup_elem(&sk_proc, &cookie);
+    if (pi)
+      __builtin_memcpy(k.comm, pi->comm, sizeof(k.comm));
+  }
   __u16 sport = 0, dport = 0;
 
   if (skb->protocol == bpf_htons(ETH_P_IP)) {
@@ -239,7 +250,7 @@ static __always_inline int verdict(struct __sk_buff *skb, int egress) {
   }
   if (egress) __sync_fetch_and_add(&b->tx, skb->len);
   else        __sync_fetch_and_add(&b->rx, skb->len);
-  account_flow(skb, cg, egress);
+  account_flow(skb, egress);
   account_proc(skb, egress);
 
   // enforce: siege drops anything outside the survivor subtree (and not loopback)

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.10
+- Per-process flows (task 5): flows are keyed by process (comm) instead of
+  cgroup now — `curl -> github.com:443`, `chronyd -> ...:123/udp` — reusing the
+  socket-cookie->comm map. Unconnected UDP (STUN etc.) is attributed via new
+  cgroup/sendmsg4+6 hooks. Connections that predate the core load show as `?`
+  (no connect hook fired); DNS-over-IPv6 transport capture is a known remainder.
+
 ## 0.1.9
 - Accounting + siege now apply only to the metered link (task 2). The daemon
   writes the metered ifindex into a `cfg` BPF map; the core ignores and passes

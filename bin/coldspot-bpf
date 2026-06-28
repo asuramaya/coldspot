@@ -56,6 +56,8 @@ case "${1:-}" in
     # connect hooks record socket -> process for per-process attribution
     bpftool cgroup attach "$CGROOT" connect4 pinned "$PIN/coldspot_connect4" multi
     bpftool cgroup attach "$CGROOT" connect6 pinned "$PIN/coldspot_connect6" multi
+    bpftool cgroup attach "$CGROOT" sendmsg4 pinned "$PIN/coldspot_sendmsg4" multi
+    bpftool cgroup attach "$CGROOT" sendmsg6 pinned "$PIN/coldspot_sendmsg6" multi
     echo "loaded + attached (stance defaults to open; metering live)"
     ;;
   unload)
@@ -64,6 +66,8 @@ case "${1:-}" in
     bpftool cgroup detach "$CGROOT" ingress  pinned "$PIN/coldspot_ingress"  2>/dev/null || true
     bpftool cgroup detach "$CGROOT" connect4 pinned "$PIN/coldspot_connect4" 2>/dev/null || true
     bpftool cgroup detach "$CGROOT" connect6 pinned "$PIN/coldspot_connect6" 2>/dev/null || true
+    bpftool cgroup detach "$CGROOT" sendmsg4 pinned "$PIN/coldspot_sendmsg4" 2>/dev/null || true
+    bpftool cgroup detach "$CGROOT" sendmsg6 pinned "$PIN/coldspot_sendmsg6" 2>/dev/null || true
     rm -rf "$PIN"
     echo "detached + unpinned"
     ;;
