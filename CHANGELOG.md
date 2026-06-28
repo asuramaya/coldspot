@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.12
+- Meter by metered CONNECTION, not interface. The same wifi adapter carries both
+  Brick (metered) and home/other (unmetered) networks, so the per-interface
+  counter lumped them together (a big unmetered download inflated the "metered"
+  total). The daemon now re-reads NetworkManager's metered flag live and only
+  accumulates session/day/budget while the active connection is metered; status
+  shows the connection name. Also fixes the stale `metered False` display.
+
 ## 0.1.11
 - DNS name cache now expires (task 6): IP->host entries drop after 30 min if not
   re-seen, so a recycled IP can't keep a stale hostname.

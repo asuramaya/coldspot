@@ -86,7 +86,7 @@ def cmd_status(args):
         return
     s, d, b = st.get("session", {}), st.get("day", {}), st.get("budget", {})
     used = b.get("used_mb", 0)
-    print(f"link    : {st.get('iface')}  "
+    print(f"link    : {st.get('connection') or '?'} on {st.get('iface')}  "
           f"(metered {st.get('metered')}, stance {st.get('stance')})")
     r = st.get("rate_bps") or {}
     if r:

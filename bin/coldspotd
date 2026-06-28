@@ -58,6 +58,28 @@ def metered_iface():
     return "lo"
 
 
+def _link_state(iface):
+    """(is_metered, connection_name) for the iface, live from NetworkManager.
+    Same wifi adapter carries both metered (Brick) and unmetered (home) networks,
+    so we gate accounting on the *connection's* metered flag, not the interface."""
+    if iface == "lo":
+        return False, ""
+    try:
+        out = subprocess.run(
+            ["nmcli", "-t", "-f", "GENERAL.METERED,GENERAL.CONNECTION",
+             "device", "show", iface],
+            capture_output=True, text=True, timeout=2).stdout
+        metered, conn = False, ""
+        for line in out.splitlines():
+            if line.startswith("GENERAL.METERED:"):
+                metered = "yes" in line.split(":", 1)[1]
+            elif line.startswith("GENERAL.CONNECTION:"):
+                conn = line.split(":", 1)[1].strip()
+        return metered, conn
+    except Exception:
+        return False, ""
+
+
 def read_iface(iface):
     """rx_bytes, tx_bytes for one iface from /proc/net/dev (or None)."""
     try:
@@ -449,9 +471,7 @@ def main():
     os.makedirs(RUN, exist_ok=True)
     os.makedirs(STATE, exist_ok=True)
     iface = metered_iface()
-    metered = "yes" in subprocess.run(
-        ["nmcli", "-t", "-f", "GENERAL.METERED", "device", "show", iface],
-        capture_output=True, text=True).stdout if iface != "lo" else "n/a"
+    metered, link_name = _link_state(iface)
 
     day = load_json(DAY_DB, {"rx": 0, "tx": 0})
     sess = {"rx": 0, "tx": 0, "since": int(time.time())}
@@ -522,16 +542,18 @@ def main():
             drx, dtx = cur[0] - last[0], cur[1] - last[1]
             dt = max(now - last_t, 0.001)
             if drx >= 0 and dtx >= 0:
-                sess["rx"] += drx
-                sess["tx"] += dtx
-                day["rx"] += drx
-                day["tx"] += dtx
                 rate = {"rx": round(drx / dt), "tx": round(dtx / dt)}
+                if metered:   # only count usage on the metered connection
+                    sess["rx"] += drx
+                    sess["tx"] += dtx
+                    day["rx"] += drx
+                    day["tx"] += dtx
         last, last_t = cur or last, now
 
         # 4) per-app attribution: prefer the BPF core, else systemd (every ~5th)
         talk_tick = (talk_tick + 1) % 5
         if talk_tick == 1:
+            metered, link_name = _link_state(iface)  # catch roaming (Brick <-> home)
             proc = read_proc_usage()
             if proc is not None:
                 talkers, src = proc, "proc"          # per-process (preferred)
@@ -559,7 +581,8 @@ def main():
                 stance, escalated = "siege", True
 
         atomic_write(STATUS, {
-            "iface": iface, "metered": metered, "stance": stance, "source": src,
+            "iface": iface, "connection": link_name, "metered": metered,
+            "stance": stance, "source": src,
             "auto_siege": conf["auto_siege"], "rate_bps": rate,
             "flows": flows,
             "session": {"rx_mb": round(sess["rx"] / 1e6, 1),
