@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.7
+- Per-process attribution (thread 3): connect4/connect6 hooks record which
+  process owns each socket (by cookie, in process context); `cgroup_skb` looks it
+  up in both directions and sums bytes per process name into a `proc_usage` map.
+  Talkers now split catch-all cgroups — the session's `org.gnome.Shell` service
+  (60+ processes) resolves to the actual culprits (curl, chrome, …). `status`
+  source shows `proc`, falling back to per-cgroup then systemd.
+- Loader attaches the new connect hooks; unload detaches them.
+
 ## 0.1.6
 - IPv6 flows (thread 2): the BPF flow parser handles IPv6 as well as IPv4. The
   flow key now holds a 16-byte address + family; `account_flow` parses the fixed

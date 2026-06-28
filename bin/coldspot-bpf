@@ -52,12 +52,17 @@ case "${1:-}" in
     # `multi` so we coexist with systemd's cgroup accounting program
     bpftool cgroup attach "$CGROOT" egress  pinned "$PIN/coldspot_egress"  multi
     bpftool cgroup attach "$CGROOT" ingress pinned "$PIN/coldspot_ingress" multi
+    # connect hooks record socket -> process for per-process attribution
+    bpftool cgroup attach "$CGROOT" connect4 pinned "$PIN/coldspot_connect4" multi
+    bpftool cgroup attach "$CGROOT" connect6 pinned "$PIN/coldspot_connect6" multi
     echo "loaded + attached (stance defaults to open; metering live)"
     ;;
   unload)
     require_root
-    bpftool cgroup detach "$CGROOT" egress  pinned "$PIN/coldspot_egress"  2>/dev/null || true
-    bpftool cgroup detach "$CGROOT" ingress pinned "$PIN/coldspot_ingress" 2>/dev/null || true
+    bpftool cgroup detach "$CGROOT" egress   pinned "$PIN/coldspot_egress"   2>/dev/null || true
+    bpftool cgroup detach "$CGROOT" ingress  pinned "$PIN/coldspot_ingress"  2>/dev/null || true
+    bpftool cgroup detach "$CGROOT" connect4 pinned "$PIN/coldspot_connect4" 2>/dev/null || true
+    bpftool cgroup detach "$CGROOT" connect6 pinned "$PIN/coldspot_connect6" 2>/dev/null || true
     rm -rf "$PIN"
     echo "detached + unpinned"
     ;;

@@ -27,6 +27,7 @@ DAY_DB = f"{STATE}/usage.json"
 BPF_USAGE = "/sys/fs/bpf/coldspot/usage"  # v1 core's per-cgroup map (if loaded)
 BPF_FLOWS = "/sys/fs/bpf/coldspot/flows"  # per-destination breakdown (if loaded)
 BPF_DNS = "/sys/fs/bpf/coldspot/dns"      # captured DNS responses (if loaded)
+BPF_PROC = "/sys/fs/bpf/coldspot/proc_usage"  # per-process bytes (if loaded)
 CONF = "/etc/coldspot.conf"
 SAMPLE = 2.0  # seconds between samples
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -328,6 +329,32 @@ def _ip_accounting_on():
     return _ip_accounting
 
 
+def read_proc_usage():
+    """Per-process rx/tx from the v1 BPF `proc_usage` map (keyed by comm).
+    None if the core isn't loaded. Preferred talker source — it splits catch-all
+    cgroups into the actual processes."""
+    if not os.path.exists(BPF_PROC):
+        return None
+    try:
+        rows = json.loads(subprocess.run(
+            ["bpftool", "map", "dump", "pinned", BPF_PROC, "-j"],
+            capture_output=True, text=True, timeout=3).stdout)
+    except Exception:
+        return None
+    out = []
+    for r in rows:
+        key, val = r.get("key"), r.get("value")
+        if not (isinstance(key, list) and isinstance(val, list) and len(val) >= 16):
+            continue
+        comm = bytes(int(b, 16) for b in key).split(b"\x00")[0].decode(
+            "ascii", "replace")
+        mb = (_le(val[0:8]) + _le(val[8:16])) / 1e6
+        if comm and mb > 0:
+            out.append({"name": comm, "mb": round(mb, 1)})
+    out.sort(key=lambda t: t["mb"], reverse=True)
+    return out[:12]
+
+
 def read_app_usage():
     """Per-app rx/tx from systemd IP accounting. Empty if not enabled.
 
@@ -476,11 +503,15 @@ def main():
         # 4) per-app attribution: prefer the BPF core, else systemd (every ~5th)
         talk_tick = (talk_tick + 1) % 5
         if talk_tick == 1:
-            bpf = read_bpf_usage()
-            if bpf is not None:
-                talkers, src = bpf, "bpf"
+            proc = read_proc_usage()
+            if proc is not None:
+                talkers, src = proc, "proc"          # per-process (preferred)
             else:
-                talkers, src = read_app_usage(), "systemd"
+                cg = read_bpf_usage()
+                if cg is not None:
+                    talkers, src = cg, "cgroup"       # per-cgroup
+                else:
+                    talkers, src = read_app_usage(), "systemd"
             read_dns_names(dns_names)
             flows = read_flows(dns_names) or []
 

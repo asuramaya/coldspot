@@ -20,6 +20,12 @@ static __u64 (*bpf_skb_cgroup_id)(struct __sk_buff *skb) =
     (void *)BPF_FUNC_skb_cgroup_id;
 static long (*bpf_skb_load_bytes)(const void *skb, __u32 off, void *to,
                                   __u32 len) = (void *)BPF_FUNC_skb_load_bytes;
+static __u64 (*bpf_get_socket_cookie)(void *ctx) =
+    (void *)BPF_FUNC_get_socket_cookie;
+static __u64 (*bpf_get_current_pid_tgid)(void) =
+    (void *)BPF_FUNC_get_current_pid_tgid;
+static long (*bpf_get_current_comm)(void *buf, __u32 size) =
+    (void *)BPF_FUNC_get_current_comm;
 
 #define bpf_htons(x) __builtin_bswap16(x)
 #define bpf_ntohs(x) __builtin_bswap16(x)

@@ -45,6 +45,54 @@ struct {
   __type(value, struct bytes);
 } flows SEC(".maps");
 
+// Per-process attribution: a connect hook (process context) records which
+// process owns each socket by its cookie; cgroup_skb (both directions) looks it
+// up by cookie and sums bytes per process name. This splits catch-all cgroups
+// (e.g. the session's org.gnome.Shell service holding 60+ processes).
+struct procinfo { __u32 pid; char comm[16]; };
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, 16384);
+  __type(key, __u64);            // socket cookie
+  __type(value, struct procinfo);
+} sk_proc SEC(".maps");
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, 4096);
+  __type(key, char[16]);         // process comm
+  __type(value, struct bytes);
+} proc_usage SEC(".maps");
+
+static __always_inline void record_proc(void *ctx) {
+  __u64 cookie = bpf_get_socket_cookie(ctx);
+  if (!cookie) return;
+  struct procinfo pi = {};
+  pi.pid = bpf_get_current_pid_tgid() >> 32;
+  bpf_get_current_comm(pi.comm, sizeof(pi.comm));
+  bpf_map_update_elem(&sk_proc, &cookie, &pi, BPF_ANY);
+}
+
+SEC("cgroup/connect4")
+int coldspot_connect4(struct bpf_sock_addr *ctx) { record_proc(ctx); return 1; }
+SEC("cgroup/connect6")
+int coldspot_connect6(struct bpf_sock_addr *ctx) { record_proc(ctx); return 1; }
+
+static __always_inline void account_proc(struct __sk_buff *skb, int egress) {
+  __u64 cookie = bpf_get_socket_cookie(skb);
+  if (!cookie) return;
+  struct procinfo *pi = bpf_map_lookup_elem(&sk_proc, &cookie);
+  if (!pi) return;
+  struct bytes *b = bpf_map_lookup_elem(&proc_usage, pi->comm);
+  struct bytes z = {};
+  if (!b) {
+    bpf_map_update_elem(&proc_usage, pi->comm, &z, BPF_NOEXIST);
+    b = bpf_map_lookup_elem(&proc_usage, pi->comm);
+    if (!b) return;
+  }
+  if (egress) __sync_fetch_and_add(&b->tx, skb->len);
+  else        __sync_fetch_and_add(&b->rx, skb->len);
+}
+
 // DNS capture ring — raw response payloads (UDP sport 53, ingress) for the
 // daemon to parse in userspace and turn IPs into hostnames. Lossy by design
 // (overwrites oldest); naming is best-effort. Parsing DNS in-kernel is painful,
@@ -175,6 +223,7 @@ static __always_inline int verdict(struct __sk_buff *skb, int egress) {
   if (egress) __sync_fetch_and_add(&b->tx, skb->len);
   else        __sync_fetch_and_add(&b->rx, skb->len);
   account_flow(skb, cg, egress);
+  account_proc(skb, egress);
 
   // enforce: siege drops anything not in the allowlist (and not loopback)
   __u32 k = 0, *st = bpf_map_lookup_elem(&policy, &k);
