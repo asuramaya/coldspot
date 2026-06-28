@@ -130,8 +130,11 @@ def cmd_stance(args):
     if not args or args[0] not in STANCES:
         sys.exit(f"usage: coldspot stance <{'|'.join(STANCES)}>")
     name = args[0]
-    _set(stance=name)          # tell the meter
-    _helper("stance", name)    # apply enforcement (nft/cgroup/metered)
+    _helper("stance", name)    # enforcement first — never depends on the daemon
+    try:                       # then update the meter (best-effort)
+        _sock({"cmd": "set", "stance": name})
+    except OSError:
+        pass
     print(f"stance -> {name}")
 
 

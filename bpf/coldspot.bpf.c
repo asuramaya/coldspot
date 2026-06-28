@@ -151,13 +151,16 @@ struct {
   __type(value, __u32);
 } policy SEC(".maps");
 
-// allowlist for siege: cgroup id -> 1. Userspace populates from coldspot.slice.
+// siege survivor: the cgroup subtree that stays on the wire. Matching by
+// ancestor id (not exact id) so descendant scopes — coldspot.slice/run-*.scope
+// from `coldspot run`, coldspot.slice/loose from `coldspot allow` — all survive.
+struct siege_cfg { __u64 cgid; __u32 level; };
 struct {
-  __uint(type, BPF_MAP_TYPE_HASH);
-  __uint(max_entries, 1024);
-  __type(key, __u64);
-  __type(value, __u8);
-} allow SEC(".maps");
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, struct siege_cfg);
+} siege SEC(".maps");
 
 // per-destination accounting: parse IPv4 + TCP/UDP via skb_load_bytes (runtime
 // offsets are fine through the helper — no direct-access bounds gymnastics).
@@ -225,12 +228,15 @@ static __always_inline int verdict(struct __sk_buff *skb, int egress) {
   account_flow(skb, cg, egress);
   account_proc(skb, egress);
 
-  // enforce: siege drops anything not in the allowlist (and not loopback)
+  // enforce: siege drops anything outside the survivor subtree (and not loopback)
   __u32 k = 0, *st = bpf_map_lookup_elem(&policy, &k);
   if (st && *st == STANCE_SIEGE) {
     if (skb->ifindex == 1) return 1;            // loopback
-    __u8 *ok = bpf_map_lookup_elem(&allow, &cg);
-    if (!ok) return 0;                          // drop: not the active task
+    struct siege_cfg *s = bpf_map_lookup_elem(&siege, &k);
+    if (s && s->cgid &&
+        bpf_skb_ancestor_cgroup_id(skb, s->level) == s->cgid)
+      return 1;                                 // the survivor subtree
+    return 0;                                   // drop everything else
   }
   return 1;
 }

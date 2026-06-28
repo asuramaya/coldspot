@@ -32,8 +32,9 @@ OBJ="$SRC_DIR/coldspot.bpf.o"
 
 require_root() { [[ $EUID -eq 0 ]] || { echo "coldspot-bpf: needs root" >&2; exit 1; }; }
 
-# u64 -> bpftool's space-separated little-endian byte list
+# u64/u32 -> bpftool's space-separated little-endian byte list
 le64() { printf '%016x\n' "$1" | sed 's/../& /g' | awk '{for(i=NF;i>=1;i--)printf "0x%s ",$i}'; }
+le32() { printf '%08x\n'  "$1" | sed 's/../& /g' | awk '{for(i=NF;i>=1;i--)printf "0x%s ",$i}'; }
 
 case "${1:-}" in
   build)
@@ -74,11 +75,14 @@ case "${1:-}" in
     ;;
   allow)
     require_root
-    cgid="${2:?usage: coldspot-bpf allow <cgroup_id>}"
-    # word-splitting is intended: le64 emits the key as separate byte args
+    cgid="${2:?usage: coldspot-bpf allow <cgroup_id> <level>}"
+    level="${3:-1}"
+    # siege_cfg = { u64 cgid; u32 level } (16 bytes incl pad), single slot key 0.
+    # word-splitting is intended: le64/le32 emit separate byte args
     # shellcheck disable=SC2046
-    bpftool map update pinned "$PIN/allow" key $(le64 "$cgid") value 0x01
-    echo "allowed cgid $cgid"
+    bpftool map update pinned "$PIN/siege" key 0 0 0 0 \
+      value $(le64 "$cgid") $(le32 "$level") 0x00 0x00 0x00 0x00
+    echo "siege survivor: cgid $cgid level $level"
     ;;
   dump)
     bpftool map dump pinned "$PIN/usage" -j 2>/dev/null || { echo "core not loaded"; exit 1; }

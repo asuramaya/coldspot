@@ -22,7 +22,7 @@ the systemd-IPAccounting reader in `bin/coldspotd`; everything above the
 | `usage`  | kernel → user | `cgroup_id → {rx, tx}` live accountant |
 | `flows`  | kernel → user | LRU `(cgroup_id, remote ip, port, proto) → {rx, tx}` per-destination |
 | `policy` | user → kernel | one slot: `0 open / 1 lean / 2 siege` |
-| `allow`  | user → kernel | `cgroup_id → 1` permitted in siege |
+| `siege`  | user → kernel | `{cgid, level}` — the survivor subtree; siege keeps any cgroup whose ancestor at `level` is `cgid` (so `coldspot.slice` + all its scopes), drops the rest |
 
 `flows` is parsed from IPv4 + TCP/UDP via `bpf_skb_load_bytes` (runtime offsets,
 no direct-access bounds checks). The remote endpoint is `daddr:dport` on egress,

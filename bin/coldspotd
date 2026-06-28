@@ -441,7 +441,10 @@ def main():
     except OSError:
         pass
     srv.bind(SOCK)
-    os.chmod(SOCK, 0o660)
+    # 0666: the unprivileged CLI (run as the user) sets stance/budget/reset here.
+    # Commands are benign local policy toggles; enforcement still goes through the
+    # privileged helper, so a loose socket can't escalate.
+    os.chmod(SOCK, 0o666)
     srv.listen()
     srv.settimeout(SAMPLE)
 

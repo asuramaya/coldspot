@@ -18,16 +18,23 @@ BPF_HELPER="$SELFDIR/coldspot-bpf"
 require_root() { [[ $EUID -eq 0 ]] || { echo "coldspot-stance: needs root" >&2; exit 1; }; }
 
 bpf_loaded() { [[ -e "$PIN/policy" ]]; }
+slice_level() { awk -F/ '{print NF-4}' <<<"$CG"; }  # /sys/fs/cgroup/X -> 1
+
+# Point the bpf core at the coldspot.slice subtree as the siege survivor. The
+# core matches by ANCESTOR id, so every descendant (run-*.scope, loose) survives
+# even though each has its own cgroup id.
+bpf_set_siege_target() {
+  bpf_loaded || return 0
+  ensure_cgroup
+  local cgid; cgid="$(stat -c %i "$CG" 2>/dev/null || true)"
+  [[ -n "$cgid" ]] && "$BPF_HELPER" allow "$cgid" "$(slice_level)" || true
+}
 
 # When the v1 core is loaded it is the enforcer: flip the policy slot and, for
-# siege, allow the coldspot.slice cgroup id (== its dir inode) on the wire.
+# siege, point it at the survivor subtree.
 bpf_apply() {
   "$BPF_HELPER" stance "$1"
-  if [[ "$1" == "2" ]]; then
-    ensure_cgroup
-    local cgid; cgid="$(stat -c %i "$CG" 2>/dev/null || true)"
-    [[ -n "$cgid" ]] && "$BPF_HELPER" allow "$cgid" || true
-  fi
+  [[ "$1" == "2" ]] && bpf_set_siege_target
 }
 
 ensure_cgroup() {
@@ -94,11 +101,16 @@ case "${1:-}" in
   allow)
     require_root; ensure_cgroup
     pid="${2:?usage: coldspot-stance allow <pid>}"
-    echo "$pid" > "$CG/cgroup.procs"
-    echo "allowed: pid $pid moved into $SLICE"
+    # cgroup v2 forbids processes in a cgroup that has child cgroups, so loose
+    # pids go in a leaf sub-cgroup of the slice (still covered by the subtree).
+    mkdir -p "$CG/loose"
+    echo "$pid" > "$CG/loose/cgroup.procs"
+    bpf_set_siege_target
+    echo "allowed: pid $pid -> $SLICE/loose"
     ;;
   run)
     require_root; ensure_cgroup; shift
+    bpf_set_siege_target   # refresh the survivor subtree before launching
     exec systemd-run --slice="$SLICE" --scope --quiet -- "$@"
     ;;
   *)

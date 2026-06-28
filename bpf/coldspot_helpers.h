@@ -18,6 +18,9 @@ static long (*bpf_map_update_elem)(void *map, const void *key,
     (void *)BPF_FUNC_map_update_elem;
 static __u64 (*bpf_skb_cgroup_id)(struct __sk_buff *skb) =
     (void *)BPF_FUNC_skb_cgroup_id;
+static __u64 (*bpf_skb_ancestor_cgroup_id)(struct __sk_buff *skb,
+                                           int level) =
+    (void *)BPF_FUNC_skb_ancestor_cgroup_id;
 static long (*bpf_skb_load_bytes)(const void *skb, __u32 off, void *to,
                                   __u32 len) = (void *)BPF_FUNC_skb_load_bytes;
 static __u64 (*bpf_get_socket_cookie)(void *ctx) =

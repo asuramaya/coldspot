@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.8
+- Fix siege (was broken end-to-end, now verified). Three bugs:
+  1. The BPF allow-list matched the exact cgroup id of `coldspot.slice`, but
+     `coldspot run` puts tasks in child scopes (`coldspot.slice/run-*.scope`)
+     with different ids — so siege dropped the very task it should permit. Now
+     matches by ANCESTOR id (`bpf_skb_ancestor_cgroup_id` at the slice's level),
+     covering the whole subtree (run scopes + the `loose` cgroup for `allow`).
+  2. The control socket was `0660 root:root`, so the user-run CLI got EACCES and
+     `coldspot stance/budget/reset` silently failed. Socket is now `0666`
+     (benign local toggles; enforcement still goes through the sudo helper).
+  3. `coldspot stance` updated the meter before enforcing and exited if the
+     daemon was unreachable — so enforcement never ran. Now enforces first,
+     updates the meter best-effort.
+- Verified live: a task in coldspot.slice keeps the network through siege while
+  everything else is dropped; clean revert.
+
 ## 0.1.7
 - Per-process attribution (thread 3): connect4/connect6 hooks record which
   process owns each socket (by cookie, in process context); `cgroup_skb` looks it
