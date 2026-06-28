@@ -118,9 +118,21 @@ echo "-- GNOME pill -> $EXT_DIR"
 sudo -u "$REAL_USER" mkdir -p "$EXT_DIR"
 install -m 0644 -o "$REAL_USER" -g "$REAL_USER" "$SRC/extension/$EXT_UUID/metadata.json" "$EXT_DIR/metadata.json"
 install -m 0644 -o "$REAL_USER" -g "$REAL_USER" "$SRC/extension/$EXT_UUID/extension.js"  "$EXT_DIR/extension.js"
-sudo -u "$REAL_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_UID/bus" \
-  gnome-extensions enable "$EXT_UUID" 2>/dev/null \
-  && echo "   enabled" || echo "   (will enable on next login; or: gnome-extensions enable $EXT_UUID)"
+runu() { sudo -u "$REAL_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_UID/bus" "$@"; }
+runu gnome-extensions enable "$EXT_UUID" 2>/dev/null || true
+# `gnome-extensions enable` no-ops if the running shell hasn't scanned a freshly
+# installed extension, so also write the enabled-extensions list directly — the
+# shell honors it on the next login (Wayland can't hot-reload extensions).
+cur="$(runu gsettings get org.gnome.shell enabled-extensions 2>/dev/null || echo '@as []')"
+if grep -Fq "'$EXT_UUID'" <<<"$cur"; then
+  echo "   enabled"
+else
+  if [[ "$cur" == "@as []" || "$cur" == "[]" ]]; then cur="['$EXT_UUID']"
+  else cur="${cur%]}, '$EXT_UUID']"; fi
+  runu gsettings set org.gnome.shell enabled-extensions "$cur" 2>/dev/null \
+    && echo "   queued for next login" \
+    || echo "   (enable manually: gnome-extensions enable $EXT_UUID)"
+fi
 
 # 7. verify perms
 echo "-- verifying"

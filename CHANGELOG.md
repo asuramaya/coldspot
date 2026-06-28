@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+- Fix: the installer enabled the GNOME pill only via `gnome-extensions enable`,
+  which silently no-ops when the running shell hasn't scanned a freshly installed
+  extension — so the pill never appeared after the next login. Now also writes
+  the `enabled-extensions` gsettings list directly (kast's approach), so it
+  reliably turns on at next login.
+
 ## 0.1.3
 - Pill is now an interactive control, not just a readout: live ↓/↑ rate in the
   header, a one-click stance switcher (open/lean/siege, current one dotted),
