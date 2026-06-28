@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6
+- IPv6 flows (thread 2): the BPF flow parser handles IPv6 as well as IPv4. The
+  flow key now holds a 16-byte address + family; `account_flow` parses the fixed
+  40-byte v6 header (TCP/UDP; packets with extension headers are skipped). The
+  daemon decodes both families and `coldspot flows` brackets bare IPv6
+  (`[2606:4700::]:443`). AAAA records from the DNS snoop name v6 destinations too.
+
 ## 0.1.5
 - Flows show hostnames, not just IPs (thread 1): the BPF ingress path captures
   DNS responses (UDP sport 53) into a ring map, and the daemon parses them —

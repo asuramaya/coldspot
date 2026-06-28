@@ -212,9 +212,20 @@ def read_dns_names(cache):
 def _external(ip):
     """True for public destinations. Skip loopback/private/link-local/multicast —
     they don't traverse the metered link, so they're noise in a hotspot view."""
+    if ":" in ip:  # IPv6
+        low = ip.lower()
+        if low in ("::1", "::"):
+            return False
+        if low[:2] == "ff":                         # multicast
+            return False
+        if low[:2] in ("fc", "fd"):                 # ULA fc00::/7
+            return False
+        if low[:3] in ("fe8", "fe9", "fea", "feb"):  # link-local fe80::/10
+            return False
+        return True
     o = ip.split(".")
     if len(o) != 4:
-        return True  # IPv6 etc. — keep
+        return True
     try:
         a, b = int(o[0]), int(o[1])
     except ValueError:
@@ -248,14 +259,19 @@ def read_flows(names=None):
     out = []
     for r in rows:
         key, val = r.get("key"), r.get("value")
-        if not (isinstance(key, list) and len(key) >= 16):
+        if not (isinstance(key, list) and len(key) >= 29):
             continue
         if not (isinstance(val, list) and len(val) >= 16):
             continue
         cg = _le(key[0:8])
-        ip = ".".join(str(int(key[8 + i], 16)) for i in range(4))
-        port = _le(key[12:14])
-        proto = _le(key[14:16])
+        fam = int(key[28], 16)
+        ipb = bytes(int(b, 16) for b in key[8:24])
+        if fam == 6:
+            ip = socket.inet_ntop(socket.AF_INET6, ipb)
+        else:
+            ip = ".".join(str(b) for b in ipb[0:4])
+        port = _le(key[24:26])
+        proto = _le(key[26:28])
         mb = (_le(val[0:8]) + _le(val[8:16])) / 1e6
         if mb <= 0 or not _external(ip):
             continue

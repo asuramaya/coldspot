@@ -31,10 +31,12 @@ struct {
 // per-destination breakdown — "which app talked to which remote endpoint".
 // LRU so it self-evicts; 16-byte key, no padding holes (stable for lookups).
 struct flow_key {
-  __u64 cg;     // cgroup id (the app)
-  __u32 ip;     // remote IPv4, network byte order (as on the wire)
-  __u16 port;   // remote service port, host order
-  __u16 proto;  // IPPROTO_TCP / IPPROTO_UDP
+  __u64 cg;        // cgroup id (the app)
+  __u8  ip[16];    // remote address: IPv4 in [0:4] (rest 0), or full IPv6
+  __u16 port;      // remote service port, host order
+  __u16 proto;     // IPPROTO_TCP / IPPROTO_UDP
+  __u8  family;    // 4 or 6
+  __u8  _pad[3];
 };
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -113,23 +115,39 @@ struct {
 // offsets are fine through the helper — no direct-access bounds gymnastics).
 static __always_inline void account_flow(struct __sk_buff *skb, __u64 cg,
                                          int egress) {
-  if (skb->protocol != bpf_htons(ETH_P_IP)) return;  // IPv4 only (v2)
-  __u8 vihl = 0, proto = 0;
-  bpf_skb_load_bytes(skb, 0, &vihl, 1);
-  __u32 ihl = (vihl & 0x0F) * 4;
-  if (ihl < 20) return;
-  bpf_skb_load_bytes(skb, 9, &proto, 1);
-  if (proto != IPPROTO_TCP && proto != IPPROTO_UDP) return;
-
-  __u32 saddr = 0, daddr = 0;
+  struct flow_key k = {.cg = cg};
   __u16 sport = 0, dport = 0;
-  bpf_skb_load_bytes(skb, 12, &saddr, 4);
-  bpf_skb_load_bytes(skb, 16, &daddr, 4);
-  bpf_skb_load_bytes(skb, ihl, &sport, 2);
-  bpf_skb_load_bytes(skb, ihl + 2, &dport, 2);
 
-  struct flow_key k = {.cg = cg, .proto = proto};
-  k.ip   = egress ? daddr : saddr;                   // the remote endpoint
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
+    __u8 vihl = 0, proto = 0;
+    bpf_skb_load_bytes(skb, 0, &vihl, 1);
+    __u32 ihl = (vihl & 0x0F) * 4;
+    if (ihl < 20) return;
+    bpf_skb_load_bytes(skb, 9, &proto, 1);
+    if (proto != IPPROTO_TCP && proto != IPPROTO_UDP) return;
+    __u32 saddr = 0, daddr = 0;
+    bpf_skb_load_bytes(skb, 12, &saddr, 4);
+    bpf_skb_load_bytes(skb, 16, &daddr, 4);
+    bpf_skb_load_bytes(skb, ihl, &sport, 2);
+    bpf_skb_load_bytes(skb, ihl + 2, &dport, 2);
+    k.family = 4;
+    k.proto = proto;
+    __builtin_memcpy(k.ip, egress ? &daddr : &saddr, 4);
+  } else if (skb->protocol == bpf_htons(ETH_P_IPV6)) {
+    __u8 nh = 0;                                      // next header
+    bpf_skb_load_bytes(skb, 6, &nh, 1);
+    if (nh != IPPROTO_TCP && nh != IPPROTO_UDP) return;  // skip ext-header pkts
+    __u8 saddr[16] = {}, daddr[16] = {};
+    bpf_skb_load_bytes(skb, 8, saddr, 16);           // fixed 40-byte v6 header
+    bpf_skb_load_bytes(skb, 24, daddr, 16);
+    bpf_skb_load_bytes(skb, 40, &sport, 2);
+    bpf_skb_load_bytes(skb, 42, &dport, 2);
+    k.family = 6;
+    k.proto = nh;
+    __builtin_memcpy(k.ip, egress ? daddr : saddr, 16);
+  } else {
+    return;
+  }
   k.port = egress ? bpf_ntohs(dport) : bpf_ntohs(sport);
 
   struct bytes *f = bpf_map_lookup_elem(&flows, &k);

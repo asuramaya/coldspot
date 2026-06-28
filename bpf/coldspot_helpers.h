@@ -25,6 +25,7 @@ static long (*bpf_skb_load_bytes)(const void *skb, __u32 off, void *to,
 #define bpf_ntohs(x) __builtin_bswap16(x)
 
 #define ETH_P_IP     0x0800
+#define ETH_P_IPV6   0x86DD
 #define IPPROTO_TCP  6
 #define IPPROTO_UDP  17
 

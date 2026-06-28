@@ -119,7 +119,10 @@ def cmd_flows(args):
         return
     print(f"{'MB':>8}  {'app':<14} destination")
     for f in flows[:20]:
-        dst = f.get("host") or f["dst"]
+        dst = f.get("host")
+        if not dst:
+            d = f["dst"]
+            dst = f"[{d}]" if ":" in d else d  # bracket bare IPv6
         print(f"{f['mb']:>8.1f}  {f['app']:<14} {dst}:{f['port']}/{f['proto']}")
 
 
