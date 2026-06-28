@@ -26,6 +26,7 @@ STATUS = f"{RUN}/status.json"
 DAY_DB = f"{STATE}/usage.json"
 BPF_USAGE = "/sys/fs/bpf/coldspot/usage"  # v1 core's per-cgroup map (if loaded)
 BPF_FLOWS = "/sys/fs/bpf/coldspot/flows"  # per-destination breakdown (if loaded)
+BPF_DNS = "/sys/fs/bpf/coldspot/dns"      # captured DNS responses (if loaded)
 CONF = "/etc/coldspot.conf"
 SAMPLE = 2.0  # seconds between samples
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -125,7 +126,111 @@ def read_bpf_usage():
     return talkers[:12]
 
 
-def read_flows():
+def _dns_name(buf, off):
+    """Read a DNS name starting at off, following compression pointers.
+    Returns (name, offset_after_name_in_stream)."""
+    labels = []
+    jumped = False
+    end = off
+    steps = 0
+    while off < len(buf) and steps < 128:
+        steps += 1
+        ln = buf[off]
+        if ln == 0:
+            off += 1
+            break
+        if ln & 0xC0 == 0xC0:  # pointer
+            if off + 1 >= len(buf):
+                break
+            if not jumped:
+                end = off + 2
+            off = ((ln & 0x3F) << 8) | buf[off + 1]
+            jumped = True
+            continue
+        off += 1
+        labels.append(buf[off:off + ln].decode("ascii", "replace"))
+        off += ln
+    return ".".join(labels), (end if jumped else off)
+
+
+def _parse_dns(buf):
+    """Best-effort: (queried name, ip) pairs from a DNS response. A + AAAA."""
+    out = []
+    try:
+        if len(buf) < 12 or not (int.from_bytes(buf[2:4], "big") & 0x8000):
+            return out  # responses only
+        qd = int.from_bytes(buf[4:6], "big")
+        an = int.from_bytes(buf[6:8], "big")
+        if not qd or not an:
+            return out
+        _, off = _dns_name(buf, 12)
+        off += 4  # qtype + qclass (one question)
+        qname = _dns_name(buf, 12)[0]
+        for _ in range(min(an, 32)):
+            _, off = _dns_name(buf, off)
+            if off + 10 > len(buf):
+                break
+            typ = int.from_bytes(buf[off:off + 2], "big")
+            rdlen = int.from_bytes(buf[off + 8:off + 10], "big")
+            rd = buf[off + 10:off + 10 + rdlen]
+            off += 10 + rdlen
+            if typ == 1 and len(rd) == 4:           # A
+                out.append((qname, ".".join(str(b) for b in rd)))
+            elif typ == 28 and len(rd) == 16:        # AAAA
+                out.append((qname, socket.inet_ntop(socket.AF_INET6, rd)))
+    except Exception:
+        pass
+    return out
+
+
+def read_dns_names(cache):
+    """Poll the BPF `dns` ring, parse responses, fill cache[ip] = hostname."""
+    if not os.path.exists(BPF_DNS):
+        return
+    try:
+        rows = json.loads(subprocess.run(
+            ["bpftool", "map", "dump", "pinned", BPF_DNS, "-j"],
+            capture_output=True, text=True, timeout=3).stdout)
+    except Exception:
+        return
+    for r in rows:
+        val = r.get("value")
+        if not (isinstance(val, list) and len(val) >= 4):
+            continue
+        ln = _le(val[0:4])
+        if ln <= 0 or 4 + ln > len(val):
+            continue
+        buf = bytes(int(b, 16) for b in val[4:4 + ln])
+        for name, ip in _parse_dns(buf):
+            if name:
+                cache[ip] = name
+    if len(cache) > 4096:  # bound the cache
+        for k in list(cache)[:len(cache) - 4096]:
+            del cache[k]
+
+
+def _external(ip):
+    """True for public destinations. Skip loopback/private/link-local/multicast —
+    they don't traverse the metered link, so they're noise in a hotspot view."""
+    o = ip.split(".")
+    if len(o) != 4:
+        return True  # IPv6 etc. — keep
+    try:
+        a, b = int(o[0]), int(o[1])
+    except ValueError:
+        return True
+    if a == 127 or a == 10 or a >= 224 or a == 0:        # loopback, 10/8, mcast
+        return False
+    if a == 172 and 16 <= b <= 31:                        # 172.16/12
+        return False
+    if a == 192 and b == 168:                             # 192.168/16
+        return False
+    if a == 169 and b == 254:                             # link-local
+        return False
+    return True
+
+
+def read_flows(names=None):
     """Per-destination breakdown from the v1 BPF `flows` map. None if unloaded.
 
     Decodes the 16-byte flow_key (cg|ip|port|proto) from raw bytes — robust
@@ -152,10 +257,10 @@ def read_flows():
         port = _le(key[12:14])
         proto = _le(key[14:16])
         mb = (_le(val[0:8]) + _le(val[8:16])) / 1e6
-        if mb <= 0:
+        if mb <= 0 or not _external(ip):
             continue
         out.append({"app": _pretty(idx.get(cg, f"cg:{cg}")),
-                    "dst": ip, "port": port,
+                    "dst": ip, "host": (names or {}).get(ip), "port": port,
                     "proto": {6: "tcp", 17: "udp"}.get(proto, str(proto)),
                     "mb": round(mb, 1)})
     out.sort(key=lambda f: f["mb"], reverse=True)
@@ -285,6 +390,7 @@ def main():
     conf = load_conf()
     escalated = False
     flows = []
+    dns_names = {}
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -359,7 +465,8 @@ def main():
                 talkers, src = bpf, "bpf"
             else:
                 talkers, src = read_app_usage(), "systemd"
-            flows = read_flows() or []
+            read_dns_names(dns_names)
+            flows = read_flows(dns_names) or []
 
         # 5) budget + publish
         used_mb = (sess["rx"] + sess["tx"]) / 1e6

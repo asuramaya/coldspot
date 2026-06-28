@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.5
+- Flows show hostnames, not just IPs (thread 1): the BPF ingress path captures
+  DNS responses (UDP sport 53) into a ring map, and the daemon parses them —
+  A/AAAA records, name-compression pointers — into an IP→host cache. Fully
+  passive: zero extra DNS queries. `coldspot flows` now prints e.g.
+  `github.com:443/tcp` where a name is known.
+- `coldspot flows` shows only external destinations — loopback/private/multicast
+  don't traverse the metered link, so they're filtered out as noise.
+- BPF verifier note: the DNS capture length is masked (not clamped) so the
+  compiler keeps the `> 0` guard the verifier requires for `bpf_skb_load_bytes`.
+
 ## 0.1.4
 - Fix: the installer enabled the GNOME pill only via `gnome-extensions enable`,
   which silently no-ops when the running shell hasn't scanned a freshly installed

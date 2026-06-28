@@ -43,6 +43,56 @@ struct {
   __type(value, struct bytes);
 } flows SEC(".maps");
 
+// DNS capture ring — raw response payloads (UDP sport 53, ingress) for the
+// daemon to parse in userspace and turn IPs into hostnames. Lossy by design
+// (overwrites oldest); naming is best-effort. Parsing DNS in-kernel is painful,
+// so we only copy bytes here.
+#define DNS_SLOTS 64      // power of two (masked index)
+#define DNS_CAP   512     // bytes captured per packet (power of two; classic DNS UDP)
+struct dns_slot { __u32 len; __u8 data[DNS_CAP]; };
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, DNS_SLOTS);
+  __type(key, __u32);
+  __type(value, struct dns_slot);
+} dns SEC(".maps");
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u32);
+} dns_head SEC(".maps");
+
+static __always_inline void capture_dns(struct __sk_buff *skb) {
+  if (skb->protocol != bpf_htons(ETH_P_IP)) return;
+  __u8 vihl = 0, proto = 0;
+  bpf_skb_load_bytes(skb, 0, &vihl, 1);
+  __u32 ihl = (vihl & 0x0F) * 4;
+  if (ihl < 20) return;
+  bpf_skb_load_bytes(skb, 9, &proto, 1);
+  if (proto != IPPROTO_UDP) return;
+  __u16 sport = 0;
+  bpf_skb_load_bytes(skb, ihl, &sport, 2);
+  if (bpf_ntohs(sport) != 53) return;        // DNS responses only
+
+  __u32 off = ihl + 8;                        // UDP payload = DNS message
+  if (off >= skb->len) return;
+  // Mask (not clamp) the length: bounds it for the verifier AND hides that it's
+  // derived from skb->len, so the compiler keeps the > 0 check the verifier needs.
+  __u32 plen = (skb->len - off) & (DNS_CAP - 1);
+  if (plen == 0) return;
+
+  __u32 zero = 0;
+  __u32 *head = bpf_map_lookup_elem(&dns_head, &zero);
+  if (!head) return;
+  __u32 idx = *head & (DNS_SLOTS - 1);
+  __sync_fetch_and_add(head, 1);
+  struct dns_slot *slot = bpf_map_lookup_elem(&dns, &idx);
+  if (!slot) return;
+  slot->len = plen;
+  bpf_skb_load_bytes(skb, off, slot->data, plen);
+}
+
 // single-slot stance, written by userspace on `coldspot stance ...`
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -122,6 +172,9 @@ SEC("cgroup_skb/egress")
 int coldspot_egress(struct __sk_buff *skb) { return verdict(skb, 1); }
 
 SEC("cgroup_skb/ingress")
-int coldspot_ingress(struct __sk_buff *skb) { return verdict(skb, 0); }
+int coldspot_ingress(struct __sk_buff *skb) {
+  capture_dns(skb);
+  return verdict(skb, 0);
+}
 
 char LICENSE[] SEC("license") = "GPL";
