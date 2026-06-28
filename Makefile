@@ -28,6 +28,7 @@ check: lint
 	bash -n install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update
 	node --check $(EXT)/extension.js
 	python3 -c "import json; json.load(open('$(EXT)/metadata.json'))"
+	python3 tests/test_units.py
 	@echo "all static checks passed"
 
 bpf:

@@ -19,10 +19,19 @@ the systemd-IPAccounting reader in `bin/coldspotd`; everything above the
 ## Maps (the userspace API)
 | map | dir | meaning |
 |-----|-----|---------|
-| `usage`  | kernel → user | `cgroup_id → {rx, tx}` live accountant |
-| `flows`  | kernel → user | LRU `(cgroup_id, remote ip, port, proto) → {rx, tx}` per-destination |
+| `usage`  | kernel → user | `cgroup_id → {rx, tx}` per-cgroup accountant |
+| `proc_usage` | kernel → user | `comm → {rx, tx}` per-process (the preferred talker source) |
+| `sk_proc` | internal | socket cookie → `{pid, comm}`, written by the connect hooks |
+| `flows`  | kernel → user | LRU `{cgroup, family, ip(16B), port, proto} → {rx, tx}` per-destination (IPv4 + IPv6) |
+| `dns` / `dns_head` | kernel → user | ring of captured DNS response payloads; userspace parses A/AAAA → IP→host |
 | `policy` | user → kernel | one slot: `0 open / 1 lean / 2 siege` |
 | `siege`  | user → kernel | `{cgid, level}` — the survivor subtree; siege keeps any cgroup whose ancestor at `level` is `cgid` (so `coldspot.slice` + all its scopes), drops the rest |
+| `cfg`    | user → kernel | metered ifindex; when nonzero, accounting + siege apply only to that link |
+
+Programs: `cgroup_skb/egress` + `/ingress` (meter + verdict), `cgroup/connect4` +
+`connect6` (record socket→process). The ingress program also captures DNS before
+the verdict, on every interface (the loopback resolver-stub responses carry the
+records); accounting and siege themselves are gated to the metered link via `cfg`.
 
 `flows` is parsed from IPv4 + TCP/UDP via `bpf_skb_load_bytes` (runtime offsets,
 no direct-access bounds checks). The remote endpoint is `daddr:dport` on egress,
