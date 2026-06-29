@@ -377,6 +377,39 @@ def set_metered_cfg(iface):
                    capture_output=True, timeout=3)
 
 
+def _bpf_clear_map(path):
+    """Delete every key in a pinned BPF hash map — there is no bulk-clear op, so
+    dump the keys and delete each. Best-effort; silent if the map isn't there."""
+    if not os.path.exists(path):
+        return
+    try:
+        rows = json.loads(subprocess.run(
+            ["bpftool", "map", "dump", "pinned", path, "-j"],
+            capture_output=True, text=True, timeout=3).stdout)
+    except Exception:
+        return
+    for r in rows:
+        key = r.get("key")
+        if not isinstance(key, list):
+            continue
+        subprocess.run(["bpftool", "map", "delete", "pinned", path,
+                        "key", *[str(b) for b in key]],
+                       capture_output=True, timeout=3)
+
+
+def bpf_reset_usage():
+    """Zero the attribution maps (usage, proc_usage, flows) on a roam.
+
+    The BPF core gates on ifindex, but metered-ness is per-CONNECTION and the
+    same adapter carries both Brick (metered) and home (unmetered). The kernel
+    can't see the SSID, so when NetworkManager reports a different connection the
+    daemon clears these maps — otherwise the previous network's bytes linger in
+    talkers/flows and disagree with the connection-gated session/day totals.
+    policy/siege/cfg/dns are intentionally left intact."""
+    for p in (BPF_USAGE, BPF_PROC, BPF_FLOWS):
+        _bpf_clear_map(p)
+
+
 def read_proc_usage():
     """Per-process rx/tx from the v1 BPF `proc_usage` map (keyed by comm).
     None if the core isn't loaded. Preferred talker source — it splits catch-all
@@ -553,7 +586,14 @@ def main():
         # 4) per-app attribution: prefer the BPF core, else systemd (every ~5th)
         talk_tick = (talk_tick + 1) % 5
         if talk_tick == 1:
-            metered, link_name = _link_state(iface)  # catch roaming (Brick <-> home)
+            new_metered, new_link = _link_state(iface)  # Brick <-> home roam?
+            if (new_metered, new_link) != (metered, link_name):
+                # roamed: the BPF attribution maps still hold the previous
+                # connection's bytes (kernel gates by ifindex, can't see SSID) —
+                # clear them so talkers/flows track only the new connection.
+                bpf_reset_usage()
+                talkers, flows = [], []
+            metered, link_name = new_metered, new_link
             proc = read_proc_usage()
             if proc is not None:
                 talkers, src = proc, "proc"          # per-process (preferred)

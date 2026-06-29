@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.15
+- Reconcile attribution on roam. The BPF core gates by ifindex, but metered-ness
+  is per-CONNECTION and the same wifi adapter carries both Brick (metered) and
+  home (unmetered) — so after roaming, talkers/flows kept showing the previous
+  network's bytes and disagreed with the connection-gated session/day totals.
+  The daemon now watches the NetworkManager connection and, on a change, clears
+  the attribution maps (usage, proc_usage, flows) so per-app/per-dest bytes track
+  only the current connection. policy/siege/cfg/dns are left intact. This settles
+  the "some of that was actually on the other wifi" confusion and is the footing
+  for per-connection history.
+
 ## 0.1.14
 - Tooling: `make deploy` is now the single local-iteration ritual — it runs the
   smoke test FIRST, then installs the binaries (loader included), rebuilds the

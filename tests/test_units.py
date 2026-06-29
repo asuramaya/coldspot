@@ -178,6 +178,33 @@ def test_read_flows_roundtrip_v6():
         == ("chrome", "2606:4700::1111", 443, "tcp", 2.5), f
 
 
+def test_bpf_clear_map_deletes_each_key():
+    # roam reset: dump the map, then issue one `bpftool map delete` per key with
+    # the dumped key bytes passed through verbatim.
+    rows = [{"key": ["0x01", "0x00"], "value": ["0x00"]},
+            {"key": ["0x02", "0x00"], "value": ["0x00"]}]
+    deletes = []
+
+    class _R:
+        stdout = json.dumps(rows)
+
+    def fake_run(cmd, *a, **k):
+        if "delete" in cmd:
+            deletes.append(cmd)
+        return _R()
+
+    real_run, real_exists = d.subprocess.run, d.os.path.exists
+    d.subprocess.run, d.os.path.exists = fake_run, (lambda p: True)
+    try:
+        d._bpf_clear_map("/sys/fs/bpf/coldspot/usage")
+    finally:
+        d.subprocess.run, d.os.path.exists = real_run, real_exists
+    assert len(deletes) == 2, deletes
+    assert deletes[0][:4] == ["bpftool", "map", "delete", "pinned"], deletes[0]
+    assert deletes[0][-2:] == ["0x01", "0x00"], deletes[0]
+    assert deletes[1][-2:] == ["0x02", "0x00"], deletes[1]
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):
