@@ -24,6 +24,8 @@ STATE = "/var/lib/coldspot"
 SOCK = f"{RUN}/control.sock"
 STATUS = f"{RUN}/status.json"
 DAY_DB = f"{STATE}/usage.json"
+HISTORY_DB = f"{STATE}/history.json"  # per-connection daily/monthly rollups
+LEDGER_DB = f"{STATE}/ledger.json"    # per-day per-app bytes (survives reloads)
 BPF_USAGE = "/sys/fs/bpf/coldspot/usage"  # v1 core's per-cgroup map (if loaded)
 BPF_FLOWS = "/sys/fs/bpf/coldspot/flows"  # per-destination breakdown (if loaded)
 BPF_DNS = "/sys/fs/bpf/coldspot/dns"      # captured DNS responses (if loaded)
@@ -410,10 +412,10 @@ def bpf_reset_usage():
         _bpf_clear_map(p)
 
 
-def read_proc_usage():
-    """Per-process rx/tx from the v1 BPF `proc_usage` map (keyed by comm).
-    None if the core isn't loaded. Preferred talker source — it splits catch-all
-    cgroups into the actual processes."""
+def read_proc_raw():
+    """{comm: total_bytes} from the BPF `proc_usage` map, full precision.
+    None if the core isn't loaded. The basis for both the talker list and the
+    persistent ledger (which needs exact cumulative bytes to take deltas)."""
     if not os.path.exists(BPF_PROC):
         return None
     try:
@@ -422,18 +424,83 @@ def read_proc_usage():
             capture_output=True, text=True, timeout=3).stdout)
     except Exception:
         return None
-    out = []
+    out = {}
     for r in rows:
         key, val = r.get("key"), r.get("value")
         if not (isinstance(key, list) and isinstance(val, list) and len(val) >= 16):
             continue
         comm = bytes(int(b, 16) for b in key).split(b"\x00")[0].decode(
             "ascii", "replace")
-        mb = (_le(val[0:8]) + _le(val[8:16])) / 1e6
-        if comm and mb > 0:
-            out.append({"name": comm, "mb": round(mb, 1)})
+        b = _le(val[0:8]) + _le(val[8:16])
+        if comm and b > 0:
+            out[comm] = out.get(comm, 0) + b
+    return out
+
+
+def proc_talkers(raw):
+    """Top processes as [{name, mb}] from a read_proc_raw() dict."""
+    out = [{"name": c, "mb": round(b / 1e6, 1)} for c, b in raw.items()]
     out.sort(key=lambda t: t["mb"], reverse=True)
     return out[:12]
+
+
+# ---- per-connection history + persistent attribution ledger ----------------
+# Two questions the live maps can't answer because they reset on roam/reload:
+#   history  — "how much have I used on Brick vs home, today and this month?"
+#   ledger   — "what ate today's data?" (survives a core reload / a roam)
+
+def history_add(history, conn, metered, today, drx, dtx):
+    """Attribute an interface byte delta to the active connection's day + month.
+    The adapter carries exactly one connection at a time, so the /proc/net/dev
+    delta belongs wholly to whatever NM reports as current."""
+    rec = history.setdefault(conn, {"metered": metered, "days": {}, "months": {}})
+    rec["metered"] = metered
+    d = rec["days"].setdefault(today, [0, 0]);          d[0] += drx; d[1] += dtx
+    m = rec["months"].setdefault(today[:7], [0, 0]);    m[0] += drx; m[1] += dtx
+
+
+def history_prune(history, keep_days=90, keep_months=24):
+    for rec in history.values():
+        for bucket, keep in (("days", keep_days), ("months", keep_months)):
+            b = rec.get(bucket, {})
+            for k in sorted(b)[:max(0, len(b) - keep)]:
+                del b[k]
+
+
+def ledger_add(ledger, prev, cur, today):
+    """Accumulate per-app deltas into today's ledger. proc_usage is cumulative
+    and is cleared on roam/reload, so a drop (cur < prev) is a reset — count the
+    current value as the delta instead of going negative."""
+    day = ledger.setdefault(today, {})
+    for comm, c in cur.items():
+        p = prev.get(comm, 0)
+        delta = c - p if c >= p else c
+        if delta > 0:
+            day[comm] = day.get(comm, 0) + delta
+
+
+def ledger_prune(ledger, keep_days=14):
+    for k in sorted(ledger)[:max(0, len(ledger) - keep_days)]:
+        del ledger[k]
+
+
+def history_summary(history, today):
+    """Compact per-connection view for status.json: today + month MB, metered."""
+    out = {}
+    for conn, rec in history.items():
+        dd = rec.get("days", {}).get(today, [0, 0])
+        mm = rec.get("months", {}).get(today[:7], [0, 0])
+        out[conn] = {"metered": rec.get("metered", False),
+                     "today_mb": round((dd[0] + dd[1]) / 1e6, 1),
+                     "month_mb": round((mm[0] + mm[1]) / 1e6, 1)}
+    return out
+
+
+def ledger_top(ledger, today, n=12):
+    day = ledger.get(today, {})
+    out = [{"name": c, "mb": round(b / 1e6, 1)} for c, b in day.items()]
+    out.sort(key=lambda e: e["mb"], reverse=True)
+    return out[:n]
 
 
 def read_app_usage():
@@ -507,6 +574,10 @@ def main():
     metered, link_name = _link_state(iface)
 
     day = load_json(DAY_DB, {"rx": 0, "tx": 0})
+    history = load_json(HISTORY_DB, {})   # per-connection day/month rollups
+    ledger = load_json(LEDGER_DB, {})     # per-day per-app bytes (delta-summed)
+    prev_proc = {}                        # last proc_usage snapshot, for deltas
+    proc_primed = False                   # skip the first delta (it's the baseline)
     sess = {"rx": 0, "tx": 0, "since": int(time.time())}
     stance, budget = "open", None
     conf = load_conf()
@@ -576,6 +647,11 @@ def main():
             dt = max(now - last_t, 0.001)
             if drx >= 0 and dtx >= 0:
                 rate = {"rx": round(drx / dt), "tx": round(dtx / dt)}
+                # per-connection history tracks every link (Brick AND home), so
+                # you can see where the month went; the budget still counts only
+                # the metered link.
+                if link_name:
+                    history_add(history, link_name, metered, today, drx, dtx)
                 if metered:   # only count usage on the metered connection
                     sess["rx"] += drx
                     sess["tx"] += dtx
@@ -590,13 +666,18 @@ def main():
             if (new_metered, new_link) != (metered, link_name):
                 # roamed: the BPF attribution maps still hold the previous
                 # connection's bytes (kernel gates by ifindex, can't see SSID) —
-                # clear them so talkers/flows track only the new connection.
+                # clear them so talkers/flows track only the new connection, and
+                # re-prime the ledger baseline (the cleared map jumps to ~0).
                 bpf_reset_usage()
                 talkers, flows = [], []
+                prev_proc, proc_primed = {}, False
             metered, link_name = new_metered, new_link
-            proc = read_proc_usage()
-            if proc is not None:
-                talkers, src = proc, "proc"          # per-process (preferred)
+            raw = read_proc_raw()
+            if raw is not None:
+                talkers, src = proc_talkers(raw), "proc"   # per-process (best)
+                if proc_primed:
+                    ledger_add(ledger, prev_proc, raw, today)
+                prev_proc, proc_primed = raw, True
             else:
                 cg = read_bpf_usage()
                 if cg is not None:
@@ -606,6 +687,10 @@ def main():
             read_dns_names(dns_names)
             flows = read_flows(dns_names) or []
             set_metered_cfg(iface)   # keep the core pinned to the metered link
+            history_prune(history)
+            ledger_prune(ledger)
+            atomic_write(HISTORY_DB, history)
+            atomic_write(LEDGER_DB, ledger)
 
         # 5) budget + publish
         used_mb = (sess["rx"] + sess["tx"]) / 1e6
@@ -633,6 +718,8 @@ def main():
             "budget": {"limit_mb": budget, "used_mb": round(used_mb, 1),
                        "pct": pct, "state": bstate},
             "talkers": talkers,
+            "history": history_summary(history, today),
+            "ledger": ledger_top(ledger, today),
             "ts": int(time.time()),
         })
         atomic_write(DAY_DB, day)

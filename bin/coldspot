@@ -5,6 +5,8 @@
 
   coldspot status [--json]              MB used, rate, stance, budget, top talkers
   coldspot flows [--json]               per-destination breakdown (needs bpf core)
+  coldspot history [--json]             per-connection usage (today + this month)
+  coldspot ledger [--json]              what ate today's data (survives reloads)
   coldspot stance <open|lean|siege>     the three stances; open = no-op
   coldspot siege                        shortcut for `stance siege`
   coldspot budget <MB|off>              session data ceiling; meter counts toward it
@@ -126,6 +128,42 @@ def cmd_flows(args):
         print(f"{f['mb']:>8.1f}  {f['app']:<14} {dst}:{f['port']}/{f['proto']}")
 
 
+def cmd_history(args):
+    st = _status()
+    if st is None:
+        sys.exit("coldspotd not running (no status).")
+    hist = st.get("history") or {}
+    if "--json" in args:
+        print(json.dumps(hist, indent=2))
+        return
+    if not hist:
+        print("no per-connection history yet.")
+        return
+    # busiest this month first; a 'M' marks the metered links (the ones that cost)
+    rows = sorted(hist.items(), key=lambda kv: kv[1].get("month_mb", 0), reverse=True)
+    print(f"{'today':>9}  {'month':>9}   connection")
+    for name, rec in rows:
+        flag = "M" if rec.get("metered") else " "
+        print(f"{rec.get('today_mb', 0):>8.1f}  {rec.get('month_mb', 0):>8.1f}  "
+              f"{flag} {name}")
+
+
+def cmd_ledger(args):
+    st = _status()
+    if st is None:
+        sys.exit("coldspotd not running (no status).")
+    led = st.get("ledger") or []
+    if "--json" in args:
+        print(json.dumps(led, indent=2))
+        return
+    if not led:
+        print("no ledger yet — needs the bpf core (sudo coldspot-bpf load).")
+        return
+    print("today — what ate your data:")
+    for e in led:
+        print(f"  {e['mb']:>8.1f} MB  {e['name']}")
+
+
 def cmd_stance(args):
     if not args or args[0] not in STANCES:
         sys.exit(f"usage: coldspot stance <{'|'.join(STANCES)}>")
@@ -211,6 +249,7 @@ def main():
     verb, rest = argv[0], argv[1:]
     table = {
         "status": cmd_status, "flows": cmd_flows, "stance": cmd_stance,
+        "history": cmd_history, "ledger": cmd_ledger,
         "budget": cmd_budget, "allow": cmd_allow, "run": cmd_run,
         "reset": cmd_reset, "version": cmd_version,
         "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),

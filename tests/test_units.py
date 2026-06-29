@@ -178,6 +178,43 @@ def test_read_flows_roundtrip_v6():
         == ("chrome", "2606:4700::1111", 443, "tcp", 2.5), f
 
 
+def test_ledger_add_deltas_and_reset():
+    # cumulative input: ledger accumulates the *delta* between snapshots.
+    led = {}
+    d.ledger_add(led, {}, {"curl": 100}, "2026-06-29")          # first delta vs {}
+    assert led["2026-06-29"]["curl"] == 100, led
+    d.ledger_add(led, {"curl": 100}, {"curl": 250}, "2026-06-29")  # +150
+    assert led["2026-06-29"]["curl"] == 250, led
+    # a DROP (map cleared on roam/reload): count the current value, never negative
+    d.ledger_add(led, {"curl": 250}, {"curl": 30}, "2026-06-29")   # reset -> +30
+    assert led["2026-06-29"]["curl"] == 280, led
+
+
+def test_ledger_prune_keeps_recent():
+    led = {f"2026-06-{day:02d}": {"x": 1} for day in range(1, 21)}  # 20 days
+    d.ledger_prune(led, keep_days=14)
+    assert len(led) == 14, sorted(led)
+    assert "2026-06-20" in led and "2026-06-06" not in led, sorted(led)
+
+
+def test_history_add_and_summary():
+    h = {}
+    d.history_add(h, "Brick", True, "2026-06-29", 1_000_000, 500_000)
+    d.history_add(h, "Brick", True, "2026-06-29", 0, 500_000)
+    d.history_add(h, "emoji wifi", False, "2026-06-29", 4_000_000, 0)
+    summ = d.history_summary(h, "2026-06-29")
+    assert summ["Brick"] == {"metered": True, "today_mb": 2.0, "month_mb": 2.0}, summ
+    assert summ["emoji wifi"]["metered"] is False, summ
+    assert summ["emoji wifi"]["today_mb"] == 4.0, summ
+
+
+def test_ledger_top_sorted():
+    led = {"2026-06-29": {"a": 1_000_000, "b": 5_000_000, "c": 2_000_000}}
+    top = d.ledger_top(led, "2026-06-29")
+    assert [e["name"] for e in top] == ["b", "c", "a"], top
+    assert top[0]["mb"] == 5.0, top
+
+
 def test_bpf_clear_map_deletes_each_key():
     # roam reset: dump the map, then issue one `bpftool map delete` per key with
     # the dumped key bytes passed through verbatim.

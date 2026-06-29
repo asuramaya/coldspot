@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.16
+- Per-connection history. The daemon now attributes every interface delta to the
+  active NetworkManager connection and keeps daily + monthly rollups per network,
+  so `coldspot history` answers "Brick vs home, today and this month" (metered
+  links flagged). The budget still counts only the metered link. Persisted to
+  `/var/lib/coldspot/history.json` (90 days / 24 months, pruned).
+- Persistent attribution ledger. Live talkers/flows reset on every roam and core
+  reload, so "what ate today's data" was unanswerable after the fact. The daemon
+  now delta-accumulates per-app bytes from `proc_usage` into a daily ledger that
+  survives both — `coldspot ledger` shows today's top apps. Resets (a cleared
+  map after a roam) are counted as a fresh delta, never negative; the first read
+  after start/roam primes the baseline instead of back-filling. Persisted to
+  `/var/lib/coldspot/ledger.json` (14 days, pruned).
+- status.json gains `history` (per-connection today/month) and `ledger` (today's
+  top apps); the smoke test locks both into the seam. Unit suite 11 -> 15 tests
+  (ledger delta/reset, prune bounds, history summary).
+
 ## 0.1.15
 - Reconcile attribution on roam. The BPF core gates by ifindex, but metered-ness
   is per-CONNECTION and the same wifi adapter carries both Brick (metered) and
