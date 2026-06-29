@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.13
+- Pill now supports GNOME Shell 49 and 50. The metadata only claimed 45-48, so on
+  GNOME 50 the shell marked the extension OUT OF DATE and never loaded it (the
+  pill never appeared after login). The extension API is unchanged since 45.
+
 ## 0.1.12
 - Meter by metered CONNECTION, not interface. The same wifi adapter carries both
   Brick (metered) and home/other (unmetered) networks, so the per-interface
