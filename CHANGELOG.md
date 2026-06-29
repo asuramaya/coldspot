@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.14
+- Tooling: `make deploy` is now the single local-iteration ritual — it runs the
+  smoke test FIRST, then installs the binaries (loader included), rebuilds the
+  eBPF object, and reloads the core in the order that makes new programs attach,
+  only restarting pieces that were already running. Codifies the deploy steps
+  that were easy to half-do by hand (a stale loader silently never attaches the
+  new programs; a daemon shipped without smoke crashes).
+- Tests: added a BPF↔daemon map-layout contract test. It parses the `flow_key`
+  struct out of `coldspot.bpf.c` and round-trips a synthetic `flows` row through
+  the daemon's real decoder (v4 + v6), so an offset drift between the kernel
+  struct and `read_flows()` fails in `make check` instead of decoding garbage on
+  the user's machine. Unit suite is 7 -> 10 tests.
+
 ## 0.1.13
 - Pill now supports GNOME Shell 49 and 50. The metadata only claimed 45-48, so on
   GNOME 50 the shell marked the extension OUT OF DATE and never loaded it (the

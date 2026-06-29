@@ -72,5 +72,18 @@ reads its `usage` map (per-app) and `flows` map (per-destination, `coldspot
 flows`) when present. Roadmap: DNS-answer snoop to name destinations → IPv6 →
 per-app intensity within `lean`.
 
+## Develop
+```sh
+make check     # CI-equivalent static checks (lint, parse, unit + contract tests)
+make smoke     # boot the daemon against a fake iface, assert status.json shape
+make deploy    # smoke-test, then push bins+bpf+daemon into place and reload (sudo)
+```
+`make deploy` is the local-iteration ritual: it runs the smoke test first, then
+installs the binaries (the loader included), rebuilds the eBPF object, and
+reloads the core in the one order that makes new programs actually attach — only
+restarting pieces that were already running. The unit suite includes a
+BPF↔daemon map-layout contract test, so a change to the `flow_key` struct that
+isn't mirrored in the decoder fails in `make check` rather than on your machine.
+
 ## License
 GPL-3.0-or-later.

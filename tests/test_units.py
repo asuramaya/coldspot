@@ -76,6 +76,108 @@ def test_le():
     assert d._le(["0x01", "0x00", "0x00", "0x00"]) == 1
 
 
+# ---- BPF<->daemon map-layout contract --------------------------------------
+# flow_key's byte offsets are hand-counted in TWO places: the C struct in
+# bpf/coldspot.bpf.c and read_flows()'s raw-key slicing in coldspotd. They must
+# agree or `coldspot flows` silently decodes garbage. These tests parse the C
+# struct and round-trip a synthetic row through the *real* decoder, so drift in
+# either half fails here instead of on the user's machine.
+import json   # noqa: E402  (kept local to the contract block)
+
+_C_TYPE_SIZE = {"char": 1, "__u8": 1, "__s8": 1, "__u16": 2, "__u32": 4,
+                "__u64": 8, "__s16": 2, "__s32": 4, "__s64": 8}
+
+
+def _flow_key_layout():
+    """Parse `struct flow_key { ... }` from the BPF source into
+    {field: (offset, size), '__sizeof__': total}. The struct is declared with
+    no padding holes (its own comment guarantees it), so sequential packing is
+    the on-wire layout bpftool dumps."""
+    src = open(os.path.join(HERE, "bpf", "coldspot.bpf.c")).read()
+    import re
+    m = re.search(r"struct flow_key\s*\{(.*?)\}\s*;", src, re.S)
+    assert m, "flow_key struct not found in coldspot.bpf.c"
+    off, layout = 0, {}
+    for raw in m.group(1).splitlines():
+        line = raw.split("//")[0].strip().rstrip(";").strip()
+        if not line:
+            continue
+        fm = re.match(r"(\w+)\s+(\w+)(?:\[(\d+)\])?$", line)
+        assert fm, f"unparsed flow_key field: {raw!r}"
+        ctype, name, count = fm.group(1), fm.group(2), fm.group(3)
+        size = _C_TYPE_SIZE[ctype] * (int(count) if count else 1)
+        layout[name] = (off, size)
+        off += size
+    layout["__sizeof__"] = off
+    return layout
+
+
+def test_flow_key_layout_matches_decoder():
+    # The offsets read_flows() hard-codes when slicing the raw key. If the C
+    # struct is reordered/resized, these stop matching and the test fails.
+    L = _flow_key_layout()
+    assert L["comm"] == (0, 16), L
+    assert L["ip"] == (16, 16), L
+    assert L["port"] == (32, 2), L
+    assert L["proto"] == (34, 2), L
+    assert L["family"] == (36, 1), L
+    assert L["__sizeof__"] == 40, L
+
+
+def _flow_row(L, comm, ipb, port, proto, fam, rx, tx):
+    """Build one bpftool `map dump -j` row for flow_key/bytes, placing each field
+    at the offset parsed from the C struct (little-endian, as x86 dumps)."""
+    key = [0] * L["__sizeof__"]
+    for i, b in enumerate(comm.encode()[:16]):
+        key[L["comm"][0] + i] = b
+    for i, b in enumerate(ipb[:16]):
+        key[L["ip"][0] + i] = b
+    po = L["port"][0]
+    key[po], key[po + 1] = port & 0xFF, (port >> 8) & 0xFF
+    pr = L["proto"][0]
+    key[pr], key[pr + 1] = proto & 0xFF, (proto >> 8) & 0xFF
+    key[L["family"][0]] = fam
+    val = list(rx.to_bytes(8, "little")) + list(tx.to_bytes(8, "little"))
+    return {"key": [f"0x{b:02x}" for b in key],
+            "value": [f"0x{b:02x}" for b in val]}
+
+
+def _decode_rows(rows, names=None):
+    """Run read_flows() against synthetic rows, stubbing bpftool + the map path
+    so it needs neither root nor a loaded core."""
+    class _R:
+        stdout = json.dumps(rows)
+    real_run, real_exists = d.subprocess.run, d.os.path.exists
+    d.subprocess.run = lambda *a, **k: _R()
+    d.os.path.exists = lambda p: True
+    try:
+        return d.read_flows(names)
+    finally:
+        d.subprocess.run, d.os.path.exists = real_run, real_exists
+
+
+def test_read_flows_roundtrip_v4():
+    L = _flow_key_layout()
+    ipb = bytes(int(x) for x in "1.2.3.4".split("."))
+    row = _flow_row(L, "curl", ipb, 443, 6, 4, 1_000_000, 0)
+    out = _decode_rows([row], names={"1.2.3.4": ("github.com", 0.0)})
+    assert out and len(out) == 1, out
+    f = out[0]
+    assert (f["app"], f["dst"], f["port"], f["proto"], f["host"], f["mb"]) \
+        == ("curl", "1.2.3.4", 443, "tcp", "github.com", 1.0), f
+
+
+def test_read_flows_roundtrip_v6():
+    L = _flow_key_layout()
+    ipb = socket.inet_pton(socket.AF_INET6, "2606:4700::1111")
+    row = _flow_row(L, "chrome", ipb, 443, 6, 6, 0, 2_500_000)
+    out = _decode_rows([row])
+    assert out and len(out) == 1, out
+    f = out[0]
+    assert (f["app"], f["dst"], f["port"], f["proto"], f["mb"]) \
+        == ("chrome", "2606:4700::1111", 443, "tcp", 2.5), f
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):
