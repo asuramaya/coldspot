@@ -275,11 +275,13 @@ def _external(ip):
     return True
 
 
-def read_flows(names=None):
-    """Per-destination breakdown from the v1 BPF `flows` map. None if unloaded.
+def read_flows_raw(names=None):
+    """All external flows from the v1 BPF `flows` map. None if the core isn't
+    loaded. Each entry carries rx+tx (`mb`) and upload alone (`tx_mb`) — the
+    advisor needs upload separated to spot seeding.
 
-    Decodes the 16-byte flow_key (cg|ip|port|proto) from raw bytes — robust
-    across bpftool versions that may or may not emit a `formatted` block.
+    Decodes the 40-byte flow_key (comm|ip|port|proto|family) from raw bytes —
+    robust across bpftool versions that may or may not emit a `formatted` block.
     """
     if not os.path.exists(BPF_FLOWS):
         return None
@@ -306,29 +308,73 @@ def read_flows(names=None):
             ip = ".".join(str(b) for b in ipb[0:4])
         port = _le(key[32:34])
         proto = _le(key[34:36])
-        mb = (_le(val[0:8]) + _le(val[8:16])) / 1e6
+        tx = _le(val[8:16])
+        mb = (_le(val[0:8]) + tx) / 1e6
         if mb <= 0 or not _external(ip):
             continue
         ent = (names or {}).get(ip)
         out.append({"app": comm,
                     "dst": ip, "host": ent[0] if ent else None, "port": port,
                     "proto": {6: "tcp", 17: "udp"}.get(proto, str(proto)),
-                    "mb": round(mb, 1)})
+                    "mb": round(mb, 1), "tx_mb": round(tx / 1e6, 1)})
     out.sort(key=lambda f: f["mb"], reverse=True)
-    return out[:20]
+    return out
+
+
+def read_flows(names=None):
+    """Top external destinations for the flows display. None if unloaded."""
+    full = read_flows_raw(names)
+    return None if full is None else full[:20]
+
+
+def advise(flows_full, conf):
+    """Spot data-hungry patterns worth a proactive nudge, returned as a list of
+    advisories. The headline one is P2P seeding: a single app fanning sustained
+    *upload* out to many distinct external peers — caught Transmission seeding
+    ~11 GB live, and unlike a single big download it's usually unintended on a
+    hotspot. Thresholds are tunable in /etc/coldspot.conf."""
+    if not conf.get("advise", True):
+        return []
+    tx_min = float(conf.get("advise_tx_mb", 200))
+    peer_min = int(conf.get("advise_peers", 8))
+    agg = {}   # app -> [tx_mb_sum, {peers}]
+    for f in flows_full or []:
+        tx = f.get("tx_mb", 0) or 0
+        if tx <= 0:
+            continue
+        a = agg.setdefault(f.get("app") or "?", [0.0, set()])
+        a[0] += tx
+        a[1].add(f.get("host") or f.get("dst"))
+    out = []
+    for app, (tx_sum, peers) in agg.items():
+        if tx_sum >= tx_min and len(peers) >= peer_min:
+            out.append({
+                "app": app, "kind": "seeding",
+                "tx_mb": round(tx_sum, 1), "peers": len(peers),
+                "hint": f"{app} is uploading {round(tx_sum)} MB to "
+                        f"{len(peers)} peers — looks like P2P seeding. "
+                        f"`coldspot siege` stops it, or pause the app."})
+    out.sort(key=lambda x: x["tx_mb"], reverse=True)
+    return out
 
 
 def load_conf():
-    """Tiny key=val config; only auto_siege so far."""
-    conf = {"auto_siege": False}
+    """Tiny key=val config: auto_siege + the advisor knobs."""
+    conf = {"auto_siege": False, "advise": True,
+            "advise_tx_mb": 200, "advise_peers": 8}
     try:
         for ln in open(CONF):
             ln = ln.strip()
             if not ln or ln.startswith("#") or "=" not in ln:
                 continue
             k, v = (x.strip() for x in ln.split("=", 1))
-            if k == "auto_siege":
-                conf["auto_siege"] = v.lower() in ("1", "true", "yes", "on")
+            if k in ("auto_siege", "advise"):
+                conf[k] = v.lower() in ("1", "true", "yes", "on")
+            elif k in ("advise_tx_mb", "advise_peers"):
+                try:
+                    conf[k] = int(v)
+                except ValueError:
+                    pass
     except OSError:
         pass
     return conf
@@ -583,6 +629,7 @@ def main():
     conf = load_conf()
     escalated = False
     flows = []
+    advice = []
     dns_names = {}
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -685,7 +732,9 @@ def main():
                 else:
                     talkers, src = read_app_usage(), "systemd"
             read_dns_names(dns_names)
-            flows = read_flows(dns_names) or []
+            flows_full = read_flows_raw(dns_names)
+            flows = flows_full[:20] if flows_full else []
+            advice = advise(flows_full, conf)   # seeding / sustained-upload nudge
             set_metered_cfg(iface)   # keep the core pinned to the metered link
             history_prune(history)
             ledger_prune(ledger)
@@ -720,6 +769,7 @@ def main():
             "talkers": talkers,
             "history": history_summary(history, today),
             "ledger": ledger_top(ledger, today),
+            "advice": advice,
             "ts": int(time.time()),
         })
         atomic_write(DAY_DB, day)

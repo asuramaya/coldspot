@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.17
+- Advisor: coldspot now proactively flags data-hungry patterns instead of only
+  reporting after the fact. The headline one is P2P seeding — a single app fanning
+  sustained *upload* out to many distinct peers (the Transmission ~11 GB pattern
+  caught live), which unlike a big download is usually unintended on a hotspot.
+  Surfaced as a `⚠ advice` line in `coldspot status`, a new `coldspot advise`
+  verb, and an `advice` array in status.json. It never changes your stance on its
+  own; it suggests `coldspot siege`. Tunable in `/etc/coldspot.conf` (`advise`,
+  `advise_tx_mb`, `advise_peers`).
+- `flows` entries now carry `tx_mb` (upload alone) alongside `mb` (rx+tx), so the
+  advisor can separate seeding from downloading. Unit suite 15 -> 18 tests.
+
 ## 0.1.16
 - Per-connection history. The daemon now attributes every interface delta to the
   active NetworkManager connection and keeps daily + monthly rollups per network,

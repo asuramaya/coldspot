@@ -15,6 +15,7 @@ coldspot siege             # only the active task talks; everything else is drop
 coldspot run -- rsync ...  # launch a job as *the* active task
 coldspot history           # per-connection usage: Brick vs home, today + this month
 coldspot ledger            # what ate today's data (persists across core reloads)
+coldspot advise            # proactive nudges, e.g. "transmission is seeding to 37 peers"
 coldspot stance open       # back to normal
 ```
 
@@ -71,8 +72,10 @@ v0.1.0 — meter + budget + stance enforcement runnable; live rate + daily
 rollover; budget auto-escalation to siege (`auto_siege` in `/etc/coldspot.conf`).
 BPF core compiles against the running kernel and loads via `bpftool`; the daemon
 reads its `usage` map (per-app) and `flows` map (per-destination, `coldspot
-flows`) when present. Roadmap: DNS-answer snoop to name destinations → IPv6 →
-per-app intensity within `lean`.
+flows`) when present. Now also: per-connection history + a persistent per-app
+ledger (`coldspot history`/`ledger`), and an advisor that flags P2P-seeding-style
+sustained upload (`coldspot advise`). Roadmap: per-app intensity within `lean`;
+surface history/ledger/advice in the pill.
 
 ## Develop
 ```sh

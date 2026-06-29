@@ -165,6 +165,7 @@ def test_read_flows_roundtrip_v4():
     f = out[0]
     assert (f["app"], f["dst"], f["port"], f["proto"], f["host"], f["mb"]) \
         == ("curl", "1.2.3.4", 443, "tcp", "github.com", 1.0), f
+    assert f["tx_mb"] == 0.0, f   # rx-only flow
 
 
 def test_read_flows_roundtrip_v6():
@@ -176,6 +177,35 @@ def test_read_flows_roundtrip_v6():
     f = out[0]
     assert (f["app"], f["dst"], f["port"], f["proto"], f["mb"]) \
         == ("chrome", "2606:4700::1111", 443, "tcp", 2.5), f
+    assert f["tx_mb"] == 2.5, f   # tx-only flow
+
+
+def test_advise_flags_seeding():
+    # one app fanning upload across many peers -> flagged; thresholds at default
+    conf = {"advise": True, "advise_tx_mb": 200, "advise_peers": 8}
+    flows = [{"app": "transmission-gt", "dst": f"9.9.9.{i}", "host": None,
+              "tx_mb": 30.0} for i in range(10)]   # 300 MB tx across 10 peers
+    adv = d.advise(flows, conf)
+    assert len(adv) == 1, adv
+    assert adv[0]["app"] == "transmission-gt", adv
+    assert adv[0]["peers"] == 10 and adv[0]["tx_mb"] == 300.0, adv
+    assert "siege" in adv[0]["hint"], adv
+
+
+def test_advise_ignores_single_big_download():
+    # a big DOWNLOAD (tx ~ 0) from few peers must NOT be flagged as seeding
+    conf = {"advise": True, "advise_tx_mb": 200, "advise_peers": 8}
+    flows = [{"app": "firefox", "dst": "1.1.1.1", "host": "cdn", "tx_mb": 2.0,
+              "mb": 900.0}]
+    assert d.advise(flows, conf) == []
+    # upload that's big but to too FEW peers (not fan-out) is also not seeding
+    few = [{"app": "rsync", "dst": "2.2.2.2", "host": None, "tx_mb": 500.0}]
+    assert d.advise(few, conf) == []
+
+
+def test_advise_respects_off_switch():
+    flows = [{"app": "x", "dst": f"3.3.3.{i}", "tx_mb": 50.0} for i in range(20)]
+    assert d.advise(flows, {"advise": False}) == []
 
 
 def test_ledger_add_deltas_and_reset():

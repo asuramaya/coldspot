@@ -7,6 +7,7 @@
   coldspot flows [--json]               per-destination breakdown (needs bpf core)
   coldspot history [--json]             per-connection usage (today + this month)
   coldspot ledger [--json]              what ate today's data (survives reloads)
+  coldspot advise [--json]              proactive nudges (e.g. P2P seeding)
   coldspot stance <open|lean|siege>     the three stances; open = no-op
   coldspot siege                        shortcut for `stance siege`
   coldspot budget <MB|off>              session data ceiling; meter counts toward it
@@ -106,6 +107,8 @@ def cmd_status(args):
             print(f"  {t['mb']:>7.1f} MB  {t['name']}")
     else:
         print("talkers : (none — enable systemd IPAccounting or the BPF core)")
+    for a in st.get("advice") or []:
+        print(f"⚠ advice : {a.get('hint')}")
 
 
 def cmd_flows(args):
@@ -162,6 +165,21 @@ def cmd_ledger(args):
     print("today — what ate your data:")
     for e in led:
         print(f"  {e['mb']:>8.1f} MB  {e['name']}")
+
+
+def cmd_advise(args):
+    st = _status()
+    if st is None:
+        sys.exit("coldspotd not running (no status).")
+    adv = st.get("advice") or []
+    if "--json" in args:
+        print(json.dumps(adv, indent=2))
+        return
+    if not adv:
+        print("nothing to flag — no heavy uploads or seeding right now.")
+        return
+    for a in adv:
+        print(f"⚠ {a.get('hint')}")
 
 
 def cmd_stance(args):
@@ -249,7 +267,7 @@ def main():
     verb, rest = argv[0], argv[1:]
     table = {
         "status": cmd_status, "flows": cmd_flows, "stance": cmd_stance,
-        "history": cmd_history, "ledger": cmd_ledger,
+        "history": cmd_history, "ledger": cmd_ledger, "advise": cmd_advise,
         "budget": cmd_budget, "allow": cmd_allow, "run": cmd_run,
         "reset": cmd_reset, "version": cmd_version,
         "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),

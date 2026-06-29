@@ -9,3 +9,10 @@ auto_siege = off
 # Units the `lean` stance pauses (space-separated). Uncomment to override the
 # default (packagekit snapd fwupd-refresh unattended-upgrades).
 # lean_hogs = packagekit snapd fwupd-refresh unattended-upgrades
+
+# Advisor: flag data-hungry patterns (the headline one is P2P seeding — one app
+# uploading to many distinct peers). Surfaced in `coldspot status`/`advise` and
+# status.json; it never changes your stance on its own. Tune or turn off:
+# advise = on
+# advise_tx_mb = 200      # min total upload (MB) by one app to flag
+# advise_peers = 8        # min distinct peers it uploads to (fan-out)
