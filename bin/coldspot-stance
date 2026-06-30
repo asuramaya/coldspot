@@ -33,6 +33,18 @@ cold_floor() {
   [[ "$f" =~ ^[0-9]+$ ]] && echo "$f" || echo 32768
 }
 
+# cold total egress cap in BITS/sec for the CAKE shaper (the whole pipe under
+# cold). Default 2 Mbit (~250 KB/s): claude stays usable, bulk crawls. The cap
+# protects the budget; warmed tasks just get priority WITHIN it (so even a runaway
+# agent swarm can't exceed it). Override:  cold_cap_bits = 1000000
+cold_cap_bits() {
+  local v
+  v="$(sed -n 's/^[[:space:]]*cold_cap_bits[[:space:]]*=[[:space:]]*//p' /etc/coldspot.conf 2>/dev/null | tail -1)"
+  [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 2000000
+}
+
+default_iface() { ip route 2>/dev/null | awk '/^default/{print $5; exit}'; }
+
 # Point the bpf core at the coldspot.slice subtree as the siege survivor. The
 # core matches by ANCESTOR id, so every descendant (run-*.scope, loose) survives
 # even though each has its own cgroup id.
@@ -47,12 +59,22 @@ bpf_set_siege_target() {
 # siege, point it at the survivor subtree.
 bpf_apply() {
   "$BPF_HELPER" stance "$1"
-  # siege (2) and cold (3) both honour the warmed-task subtree; cold also needs
-  # its egress floor set.
+  # leaving cold tears down the CAKE cap + QoS marking
+  if [[ "$1" != "3" ]]; then
+    local oifc; oifc="$(default_iface)"; [[ -n "$oifc" ]] && shaper_clear "$oifc"
+  fi
+  # siege (2) and cold (3) both honour the warmed-task subtree.
   if [[ "$1" == "2" || "$1" == "3" ]]; then bpf_set_siege_target; fi
   if [[ "$1" == "3" ]]; then
-    local floor; floor="$(cold_floor)"
-    "$BPF_HELPER" throttle "$floor" "$((floor * 2))"
+    # Cold prefers the smooth CAKE cap + warmed priority; only if tc/CAKE is
+    # unavailable do we fall back to the crude BPF token-bucket floor.
+    local ifc; ifc="$(default_iface)"
+    if [[ -n "$ifc" ]] && shaper_setup "$ifc" "$(cold_cap_bits)"; then
+      "$BPF_HELPER" throttle 0 0                       # CAKE shapes; BPF fails open
+    else
+      local floor; floor="$(cold_floor)"
+      "$BPF_HELPER" throttle "$floor" "$((floor * 2))"  # fallback: BPF floor
+    fi
   fi
 }
 
@@ -110,19 +132,45 @@ EOF
 # does per-flow fairness for free, so no single connection hogs the trickle.
 # Falls back to a single-class HTB with a generous burst if sch_cake is absent.
 # Per-app priority / caps + ingress download policing land in task #20.
+# Priority within the cap: mark warmed (coldspot.slice) + DNS egress with a high
+# DSCP (CS5). CAKE runs diffserv3, which maps CS5 to its latency-sensitive tin, so
+# warmed traffic is served BEFORE bulk — claude stays responsive while a runaway
+# pull/website/swarm gets only the leftover. Everything stays under the total cap.
+nft_qos() {
+  nft delete table inet coldspot_qos 2>/dev/null || true
+  nft -f - <<EOF
+table inet coldspot_qos {
+  chain out {
+    type filter hook output priority mangle; policy accept;
+    socket cgroupv2 level 1 "$SLICE" ip dscp set cs5
+    socket cgroupv2 level 1 "$SLICE" ip6 dscp set cs5
+    udp dport 53 ip dscp set cs5
+    udp dport 53 ip6 dscp set cs5
+    tcp dport 53 ip dscp set cs5
+    tcp dport 53 ip6 dscp set cs5
+  }
+}
+EOF
+}
+nft_qos_clear() { nft delete table inet coldspot_qos 2>/dev/null || true; }
+
 shaper_setup() {
   local iface="$1" bits="$2"
-  if tc qdisc replace dev "$iface" root cake bandwidth "${bits}bit" 2>/dev/null; then
+  if tc qdisc replace dev "$iface" root cake bandwidth "${bits}bit" diffserv3 2>/dev/null; then
+    nft_qos 2>/dev/null || true   # warmed/DNS -> priority tin
     return 0
   fi
   local burst=$(( bits / 800 )); [[ $burst -lt 1600 ]] && burst=1600   # ~10ms of rate
-  tc qdisc replace dev "$iface" root handle 1: htb default 1
+  tc qdisc replace dev "$iface" root handle 1: htb default 1 || return 1
   tc class replace dev "$iface" parent 1: classid 1:1 \
     htb rate "${bits}bit" ceil "${bits}bit" burst "${burst}b" cburst "${burst}b"
   tc qdisc replace dev "$iface" parent 1:1 handle 10: fq_codel 2>/dev/null || true
 }
 
-shaper_clear() { tc qdisc del dev "$1" root 2>/dev/null || true; }
+shaper_clear() {
+  nft_qos_clear
+  tc qdisc del dev "$1" root 2>/dev/null || true
+}
 
 pause_hogs() { for u in "${HOGS[@]}"; do systemctl stop "$u" 2>/dev/null || true; done; }
 

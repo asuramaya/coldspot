@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.29
+- Direct the trickle wisely (raichu phase C, task #20). Cold is now a smooth
+  CAKE cap with PRIORITY inside it, not a crude drop-floor: warmed tasks
+  (`uncap`/`run`) + DNS are marked CS5 (nft mangle, cgroup match) and CAKE's
+  diffserv3 serves them from its latency tin first, so the task you care about
+  (claude) stays responsive while a runaway pull/website/agent-swarm gets only
+  the leftover — and because everything shares one capped pipe, nothing can
+  exceed the ceiling (the cap protects the budget; priority protects your task).
+  Cold auto-applies the cap (`cold_cap_bits`, default 2 Mbit) and sets the eBPF
+  token-bucket to fail-open so CAKE is the sole shaper; the BPF floor remains only
+  as a fallback when tc/CAKE is unavailable. `coldspot open`/stance changes tear
+  the shaper + QoS down. Validated live end-to-end (CAKE diffserv3 + 6 CS5 rules
+  install/clear; cold sets throttle rate 0).
+  Deferred: explicit per-app `cap <app> <rate>` (needs classful HTB) and a hard
+  ingress download cap (police = lossy; the egress cap already ACK-throttles
+  downloads). Tracked for a later pass.
+
 ## 0.1.28
 - `coldspot limit <rate>` — a smooth, hard system-wide egress cap (raichu phase C,
   task #19). Set a literal ceiling on the link: `coldspot limit 1mbps` / `500kbps`

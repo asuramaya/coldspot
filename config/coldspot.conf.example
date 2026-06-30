@@ -6,9 +6,14 @@
 # stay in siege until you explicitly act, then it can re-arm.
 auto_siege = off
 
-# Cold stance (coldspot cold): throttle ALL egress to this floor except tasks you
-# explicitly warm up (coldspot allow/run) and DNS. Bytes/second; "cripple almost"
-# default is 32768 (~256 kbit/s). Lower it to bite harder.
+# Cold caps total egress to a smooth pipe (CAKE) and gives warmed tasks
+# (coldspot uncap/run) + DNS priority WITHIN it — so claude stays responsive while
+# a runaway pull/website/swarm gets only the leftover, and nothing can exceed the
+# cap. Bits/second; default 2000000 (2 Mbit ~ 250 KB/s).
+# cold_cap_bits = 2000000
+
+# Fallback only (when tc/CAKE is unavailable): cold instead drops non-warmed
+# egress above this BYTES/sec floor via the eBPF token bucket. Default 32768.
 # cold_floor_bps = 32768
 
 # Auto-govern: automatically enter `cold` whenever the active connection is

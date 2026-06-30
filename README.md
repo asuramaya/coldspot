@@ -29,7 +29,12 @@ coldspot stance open       # back to normal
 |--------|--------------|
 | `open`  | normal; relies only on the NetworkManager metered flag |
 | `lean`  | pause the known hogs (updates, snap, tailscale), keep browsing |
+| `cold`  | **the metered default (auto).** Caps total egress to a smooth pipe (CAKE) and gives warmed tasks + DNS priority *within* it — so the app you care about stays responsive while a runaway pull/website/swarm gets only the leftover, and **nothing can exceed the cap**. The cap protects the budget; priority protects your task. Critical connectivity (NetworkManager/DNS/DHCP/NTP/updates) is never throttled. |
 | `siege` | nftables default-drop + cgroup allowlist — only `coldspot.slice` survives |
+
+On a metered link coldspot enters `cold` automatically. Warm the task you're
+protecting — `coldspot uncap claude` / `coldspot run -- <cmd>` — and it rides the
+priority lane; `coldspot open` lifts everything.
 
 ## How it works
 Two halves behind one `status.json` seam:
