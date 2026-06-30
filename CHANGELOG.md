@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.18
+- Name connections that predate the core load (v0.2.0 "raichu" phase A, task #12).
+  The connect hook only fires on NEW connections, so anything already open when
+  the eBPF core loads had no owner and showed as `?` in `coldspot flows` — exactly
+  what forced a manual `ss` hunt to pin a 7 GB upload on `claude`. The daemon now
+  resolves `?` flows the way `ss` does: remote tuple -> socket inode
+  (/proc/net/{tcp,udp}{,6}) -> pid (/proc/*/fd) -> process name. The /proc scan is
+  lazy (only when something is actually unknown). Verified live: the prior
+  `? [2607:6bc0::10]:443` resolves to `claude`. Unit suite 18 -> 22.
+
 ## 0.1.17
 - Advisor: coldspot now proactively flags data-hungry patterns instead of only
   reporting after the fact. The headline one is P2P seeding — a single app fanning

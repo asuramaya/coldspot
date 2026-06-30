@@ -180,6 +180,39 @@ def test_read_flows_roundtrip_v6():
     assert f["tx_mb"] == 2.5, f   # tx-only flow
 
 
+def test_hex_to_ip_port_v4():
+    assert d._hex_to_ip_port("0100007F:0050", False) == ("127.0.0.1", 80)
+    assert d._hex_to_ip_port("08080808:01BB", False) == ("8.8.8.8", 443)
+
+
+def test_hex_to_ip_port_v6():
+    # ::1 as /proc/net/tcp6 prints it (word-reversed), port 8080
+    assert d._hex_to_ip_port(
+        "00000000000000000000000001000000:1F90", True) == ("::1", 8080)
+
+
+def test_parse_proc_net():
+    text = ("  sl  local_address rem_address   st tx_queue rx_queue ... \n"
+            "   0: 0100007F:9C40 08080808:01BB 01 00000000:00000000 "
+            "00:00000000 00000000 1000 0 4242 1 ...\n"
+            "   1: garbageline\n")
+    rows = d._parse_proc_net(text, False)
+    assert rows == [("8.8.8.8", 443, 4242)], rows
+
+
+def test_enrich_unknown_flows():
+    flows = [{"app": "?", "dst": "1.2.3.4", "port": 443, "proto": "tcp", "mb": 5.0},
+             {"app": "curl", "dst": "5.6.7.8", "port": 80, "proto": "tcp", "mb": 1.0}]
+    real = d.flow_owner_index
+    d.flow_owner_index = lambda: {("tcp", "1.2.3.4", 443): "transmission-gt"}
+    try:
+        d.enrich_unknown_flows(flows)
+    finally:
+        d.flow_owner_index = real
+    assert flows[0]["app"] == "transmission-gt", flows
+    assert flows[1]["app"] == "curl", flows   # already named, untouched
+
+
 def test_advise_flags_seeding():
     # one app fanning upload across many peers -> flagged; thresholds at default
     conf = {"advise": True, "advise_tx_mb": 200, "advise_peers": 8}

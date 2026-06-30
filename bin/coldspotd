@@ -327,6 +327,106 @@ def read_flows(names=None):
     return None if full is None else full[:20]
 
 
+# ---- name connections that predate the core load --------------------------
+# The connect hook only fires on NEW connections, so anything already open when
+# the core loads has no owner in the cookie map and shows as `?`. We can't seed
+# the cookie-keyed BPF map from userspace (socket cookies aren't exposed for
+# foreign sockets), so resolve `?` flows the way `ss` does: remote tuple ->
+# socket inode (/proc/net/{tcp,udp}*) -> pid (/proc/*/fd) -> process name.
+
+def _hex_to_ip_port(token, v6):
+    """'0100007F:0050' -> ('127.0.0.1', 80). /proc/net prints each 32-bit word
+    in CPU order, so recover network bytes by reversing within each 4-byte word
+    (v4 = one word, v6 = four)."""
+    addr, _, port = token.partition(":")
+    raw = bytes.fromhex(addr)
+    net = b"".join(raw[i:i + 4][::-1] for i in range(0, len(raw), 4))
+    fam = socket.AF_INET6 if v6 else socket.AF_INET
+    return socket.inet_ntop(fam, net), int(port, 16)
+
+
+def _parse_proc_net(text, v6):
+    """[(remote_ip, remote_port, inode)] from a /proc/net/{tcp,udp}* dump."""
+    out = []
+    for line in text.splitlines()[1:]:   # skip the header row
+        f = line.split()
+        if len(f) < 10:
+            continue
+        try:
+            rip, rport = _hex_to_ip_port(f[2], v6)   # col 2 = rem_address
+            out.append((rip, rport, int(f[9])))      # col 9 = socket inode
+        except Exception:
+            continue
+    return out
+
+
+def _socket_inode_pids():
+    """{socket_inode: comm} by scanning /proc/*/fd for socket:[inode] links."""
+    out = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        fddir = f"/proc/{pid}/fd"
+        comm = None
+        try:
+            fds = os.listdir(fddir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(f"{fddir}/{fd}")
+            except OSError:
+                continue
+            if target.startswith("socket:["):
+                ino = int(target[8:-1])
+                if ino in out:
+                    continue
+                if comm is None:
+                    try:
+                        comm = open(f"/proc/{pid}/comm").read().strip() or pid
+                    except OSError:
+                        comm = pid
+                out[ino] = comm
+    return out
+
+
+def flow_owner_index():
+    """{(proto, remote_ip, remote_port): comm} resolving live endpoints to their
+    owning process (like `ss`). The inode->pid scan is built lazily, only if a
+    socket actually needs resolving."""
+    idx = {}
+    inode_pid = None
+    for fname, v6 in (("tcp", False), ("tcp6", True), ("udp", False), ("udp6", True)):
+        proto = "tcp" if fname.startswith("tcp") else "udp"
+        try:
+            text = open(f"/proc/net/{fname}").read()
+        except OSError:
+            continue
+        for rip, rport, inode in _parse_proc_net(text, v6):
+            if not inode:
+                continue
+            if inode_pid is None:
+                inode_pid = _socket_inode_pids()
+            comm = inode_pid.get(inode)
+            if comm:
+                idx[(proto, rip, rport)] = comm
+    return idx
+
+
+def enrich_unknown_flows(flows):
+    """Replace `?` (pre-existing connection) with the resolved process name.
+    No-op — and no /proc scan — when nothing is unknown."""
+    if not any(f.get("app") == "?" for f in flows):
+        return flows
+    idx = flow_owner_index()
+    for f in flows:
+        if f.get("app") == "?":
+            comm = idx.get((f["proto"], f["dst"], f["port"]))
+            if comm:
+                f["app"] = comm
+    return flows
+
+
 def advise(flows_full, conf):
     """Spot data-hungry patterns worth a proactive nudge, returned as a list of
     advisories. The headline one is P2P seeding: a single app fanning sustained
@@ -733,6 +833,8 @@ def main():
                     talkers, src = read_app_usage(), "systemd"
             read_dns_names(dns_names)
             flows_full = read_flows_raw(dns_names)
+            if flows_full:
+                enrich_unknown_flows(flows_full)  # name pre-load connections
             flows = flows_full[:20] if flows_full else []
             advice = advise(flows_full, conf)   # seeding / sustained-upload nudge
             set_metered_cfg(iface)   # keep the core pinned to the metered link
