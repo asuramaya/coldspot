@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.21
+- `coldspot top` — a live, refreshing per-app ↑/↓ view (raichu phase D, task #22).
+  The one-command answer to "what's burning my data right now" that had to be
+  hand-rolled with ss + BPF sampling today. The daemon now computes per-app
+  rx_bps/tx_bps (byte delta since the last attribution) and adds them to each
+  talker in status.json; `coldspot top` sorts by live rate and shows ↑rate/↓rate
+  next to ↑/↓ totals, refreshing every 2s (--once for a single frame). Pure
+  userspace, reads the existing status seam. Unit suite 23 -> 24.
+
 ## 0.1.20
 - NEW `cold` stance — the governance core (raichu phase B, task #15). Where siege
   drops everything outside the warmed task, cold *throttles* it: non-warmed egress

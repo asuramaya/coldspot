@@ -180,6 +180,17 @@ def test_read_flows_roundtrip_v6():
     assert f["tx_mb"] == 2.5, f   # tx-only flow
 
 
+def test_attach_rates():
+    talkers = [{"name": "claude", "rx_mb": 1, "tx_mb": 20, "mb": 21}]
+    d.attach_rates(talkers, {"claude": [1_000_000, 20_000_000]},
+                   {"claude": [800_000, 8_000_000]}, 2.0)
+    assert talkers[0]["tx_bps"] == 6_000_000, talkers   # 12 MB / 2s
+    assert talkers[0]["rx_bps"] == 100_000, talkers     # 0.2 MB / 2s
+    # a reset (cur < prev) reads as 0, never negative
+    d.attach_rates(talkers, {"claude": [0, 0]}, {"claude": [5, 5]}, 1.0)
+    assert talkers[0]["tx_bps"] == 0 and talkers[0]["rx_bps"] == 0, talkers
+
+
 def test_hex_to_ip_port_v4():
     assert d._hex_to_ip_port("0100007F:0050", False) == ("127.0.0.1", 80)
     assert d._hex_to_ip_port("08080808:01BB", False) == ("8.8.8.8", 443)

@@ -13,6 +13,7 @@ coldspot status            # MB used, budget, stance, top talkers
 coldspot budget 500        # cap this session at 500 MB; the pill heats up as you near it
 coldspot siege             # only the active task talks; everything else is dropped
 coldspot run -- rsync ...  # launch a job as *the* active task
+coldspot top               # live per-app ↑/↓ view (what's burning data right now)
 coldspot history           # per-connection usage: Brick vs home, today + this month
 coldspot ledger            # what ate today's data (persists across core reloads)
 coldspot advise            # proactive nudges, e.g. "transmission is seeding to 37 peers"

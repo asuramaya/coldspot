@@ -604,6 +604,16 @@ def proc_talkers(raw):
     return _talkers(raw)
 
 
+def attach_rates(talkers, raw, prev, dt):
+    """Add per-app rx_bps/tx_bps from the byte delta since the last attribution
+    (what `coldspot top` shows). dt is seconds; a map reset just reads as 0."""
+    for t in talkers:
+        crx, ctx = raw.get(t["name"], (0, 0))
+        prx, ptx = prev.get(t["name"], (0, 0))
+        t["rx_bps"] = round(max(0, crx - prx) / dt)
+        t["tx_bps"] = round(max(0, ctx - ptx) / dt)
+
+
 # ---- per-connection history + persistent attribution ledger ----------------
 # Two questions the live maps can't answer because they reset on roam/reload:
 #   history  — "how much have I used on Brick vs home, today and this month?"
@@ -753,6 +763,7 @@ def main():
     ledger = load_json(LEDGER_DB, {})     # per-day per-app bytes (delta-summed)
     prev_proc = {}                        # last proc_usage snapshot, for deltas
     proc_primed = False                   # skip the first delta (it's the baseline)
+    last_attr_t = time.monotonic()        # for per-app rate (coldspot top)
     sess = {"rx": 0, "tx": 0, "since": int(time.time())}
     stance, budget = "open", None
     conf = load_conf()
@@ -850,10 +861,13 @@ def main():
             metered, link_name = new_metered, new_link
             raw = read_proc_raw()
             if raw is not None:
-                talkers, src = proc_talkers(raw), "proc"   # per-process (best)
+                tk = proc_talkers(raw)                     # per-process (best)
                 if proc_primed:
                     ledger_add(ledger, prev_proc, raw, today)
+                    attach_rates(tk, raw, prev_proc, max(now - last_attr_t, 0.001))
+                talkers, src = tk, "proc"
                 prev_proc, proc_primed = raw, True
+                last_attr_t = now
             else:
                 cg = read_bpf_usage()
                 if cg is not None:

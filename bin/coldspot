@@ -4,6 +4,7 @@
 """coldspot — one human entrypoint for the cold link (mirrors `phanspeed <verb>`).
 
   coldspot status [--json]              MB used, rate, stance, budget, top talkers
+  coldspot top                          live per-app ↑/↓ view (refreshes; ctrl-c)
   coldspot flows [--json]               per-destination breakdown (needs bpf core)
   coldspot history [--json]             per-connection usage (today + this month)
   coldspot ledger [--json]              what ate today's data (survives reloads)
@@ -131,6 +132,52 @@ def cmd_flows(args):
             d = f["dst"]
             dst = f"[{d}]" if ":" in d else d  # bracket bare IPv6
         print(f"{f['mb']:>8.1f}  {f['app']:<14} {dst}:{f['port']}/{f['proto']}")
+
+
+def _render_top(st):
+    conn = st.get("connection") or "?"
+    m = "metered" if st.get("metered") else "unmetered"
+    r = st.get("rate_bps") or {}
+    b = st.get("budget") or {}
+    day = st.get("day") or {}
+    print(f"coldspot top — {conn} ({m}, {st.get('stance')})"
+          f"      ↑up / ↓down   (ctrl-c to quit)")
+    line = (f"interface: ↓{_human(r.get('rx', 0))}  ↑{_human(r.get('tx', 0))}"
+            f"   today {round(day.get('rx_mb', 0) + day.get('tx_mb', 0), 1)} MB")
+    if b.get("limit_mb"):
+        line += f"   budget {b.get('used_mb', 0)}/{b['limit_mb']} MB"
+    print(line)
+    for a in st.get("advice") or []:
+        print(f"⚠ {a.get('hint')}")
+    talkers = st.get("talkers") or []
+    # sort by current upload+download rate when we have it, else by total bytes
+    talkers = sorted(talkers, key=lambda t: (t.get("tx_bps", 0) + t.get("rx_bps", 0),
+                                             t.get("mb", 0)), reverse=True)
+    print(f"\n  {'↑rate':>9} {'↓rate':>9}   {'↑tot':>8} {'↓tot':>8}   app")
+    for t in talkers[:15]:
+        print(f"  {_human(t.get('tx_bps', 0)):>9} {_human(t.get('rx_bps', 0)):>9}   "
+              f"{t.get('tx_mb', 0):>7.1f}M {t.get('rx_mb', 0):>7.1f}M   {t['name']}")
+    if not talkers:
+        print("  (no talkers — load the bpf core: sudo coldspot-bpf load)")
+
+
+def cmd_top(args):
+    import time
+    once = "--once" in args
+    try:
+        while True:
+            st = _status()
+            sys.stdout.write("\x1b[2J\x1b[H")   # clear screen, cursor home
+            if st is None:
+                print("coldspotd not running (no status).")
+            else:
+                _render_top(st)
+            sys.stdout.flush()
+            if once:
+                break
+            time.sleep(2)
+    except KeyboardInterrupt:
+        pass
 
 
 def cmd_history(args):
@@ -271,6 +318,7 @@ def main():
     verb, rest = argv[0], argv[1:]
     table = {
         "status": cmd_status, "flows": cmd_flows, "stance": cmd_stance,
+        "top": cmd_top,
         "history": cmd_history, "ledger": cmd_ledger, "advise": cmd_advise,
         "budget": cmd_budget, "allow": cmd_allow, "run": cmd_run,
         "reset": cmd_reset, "version": cmd_version,
