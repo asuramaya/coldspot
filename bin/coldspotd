@@ -115,6 +115,28 @@ def _cgroup_index():
     return idx
 
 
+def _rxtx(val, fmt):
+    """(rx, tx) bytes from a bpftool `struct bytes` value in any of the shapes
+    bpftool emits across versions. None if it doesn't look like one."""
+    if isinstance(val, dict):
+        return int(val.get("rx", 0) or 0), int(val.get("tx", 0) or 0)
+    if isinstance(fmt.get("value"), dict):
+        v = fmt["value"]
+        return int(v.get("rx", 0) or 0), int(v.get("tx", 0) or 0)
+    if isinstance(val, list) and len(val) >= 16:
+        return _le(val[0:8]), _le(val[8:16])
+    return None
+
+
+def _talkers(agg, n=12):
+    """{name: [rx, tx]} -> sorted [{name, rx_mb, tx_mb, mb}]. `mb` (combined) is
+    kept for older pill builds; rx_mb/tx_mb are the direction split."""
+    out = [{"name": name, "rx_mb": round(rx / 1e6, 1), "tx_mb": round(tx / 1e6, 1),
+            "mb": round((rx + tx) / 1e6, 1)} for name, (rx, tx) in agg.items()]
+    out.sort(key=lambda t: t["mb"], reverse=True)
+    return out[:n]
+
+
 def read_bpf_usage():
     """Per-app rx/tx from the v1 BPF `usage` map. None if the core isn't loaded.
 
@@ -133,23 +155,15 @@ def read_bpf_usage():
     agg = {}
     for r in rows:
         key, val = r.get("key"), r.get("value")
-        fmt = r.get("formatted") or {}
         cgid = _le(key) if isinstance(key, list) else int(key) if key else None
-        if isinstance(val, dict):
-            tot = (val.get("rx", 0) or 0) + (val.get("tx", 0) or 0)
-        elif isinstance(fmt.get("value"), dict):
-            tot = fmt["value"].get("rx", 0) + fmt["value"].get("tx", 0)
-        elif isinstance(val, list) and len(val) >= 16:
-            tot = _le(val[0:8]) + _le(val[8:16])
-        else:
-            continue
-        if cgid is None or tot <= 0:
+        rxtx = _rxtx(val, r.get("formatted") or {})
+        if cgid is None or rxtx is None or (rxtx[0] + rxtx[1]) <= 0:
             continue
         name = _pretty(idx.get(cgid, f"cg:{cgid}"))
-        agg[name] = agg.get(name, 0) + tot
-    talkers = [{"name": n, "mb": round(b / 1e6, 1)} for n, b in agg.items()]
-    talkers.sort(key=lambda t: t["mb"], reverse=True)
-    return talkers[:12]
+        e = agg.setdefault(name, [0, 0])
+        e[0] += rxtx[0]
+        e[1] += rxtx[1]
+    return _talkers(agg)
 
 
 def _dns_name(buf, off):
@@ -577,17 +591,17 @@ def read_proc_raw():
             continue
         comm = bytes(int(b, 16) for b in key).split(b"\x00")[0].decode(
             "ascii", "replace")
-        b = _le(val[0:8]) + _le(val[8:16])
-        if comm and b > 0:
-            out[comm] = out.get(comm, 0) + b
+        rx, tx = _le(val[0:8]), _le(val[8:16])
+        if comm and (rx + tx) > 0:
+            e = out.setdefault(comm, [0, 0])
+            e[0] += rx
+            e[1] += tx
     return out
 
 
 def proc_talkers(raw):
-    """Top processes as [{name, mb}] from a read_proc_raw() dict."""
-    out = [{"name": c, "mb": round(b / 1e6, 1)} for c, b in raw.items()]
-    out.sort(key=lambda t: t["mb"], reverse=True)
-    return out[:12]
+    """Top processes as [{name, rx_mb, tx_mb, mb}] from a read_proc_raw() dict."""
+    return _talkers(raw)
 
 
 # ---- per-connection history + persistent attribution ledger ----------------
@@ -614,15 +628,19 @@ def history_prune(history, keep_days=90, keep_months=24):
 
 
 def ledger_add(ledger, prev, cur, today):
-    """Accumulate per-app deltas into today's ledger. proc_usage is cumulative
-    and is cleared on roam/reload, so a drop (cur < prev) is a reset — count the
-    current value as the delta instead of going negative."""
+    """Accumulate per-app rx/tx deltas into today's ledger. proc_usage is
+    cumulative and is cleared on roam/reload, so a drop (cur < prev) is a reset —
+    count the current value as the delta instead of going negative. cur/prev are
+    {comm: [rx, tx]}; the day entry is [rx, tx]."""
     day = ledger.setdefault(today, {})
-    for comm, c in cur.items():
-        p = prev.get(comm, 0)
-        delta = c - p if c >= p else c
-        if delta > 0:
-            day[comm] = day.get(comm, 0) + delta
+    for comm, (crx, ctx) in cur.items():
+        prx, ptx = prev.get(comm, (0, 0))
+        drx = crx - prx if crx >= prx else crx
+        dtx = ctx - ptx if ctx >= ptx else ctx
+        if drx > 0 or dtx > 0:
+            e = day.setdefault(comm, [0, 0])
+            e[0] += max(0, drx)
+            e[1] += max(0, dtx)
 
 
 def ledger_prune(ledger, keep_days=14):
@@ -631,20 +649,28 @@ def ledger_prune(ledger, keep_days=14):
 
 
 def history_summary(history, today):
-    """Compact per-connection view for status.json: today + month MB, metered."""
+    """Compact per-connection view for status.json: today + month MB (with the
+    ↑/↓ split), metered flag."""
     out = {}
     for conn, rec in history.items():
         dd = rec.get("days", {}).get(today, [0, 0])
         mm = rec.get("months", {}).get(today[:7], [0, 0])
         out[conn] = {"metered": rec.get("metered", False),
                      "today_mb": round((dd[0] + dd[1]) / 1e6, 1),
+                     "today_rx_mb": round(dd[0] / 1e6, 1),
+                     "today_tx_mb": round(dd[1] / 1e6, 1),
                      "month_mb": round((mm[0] + mm[1]) / 1e6, 1)}
     return out
 
 
 def ledger_top(ledger, today, n=12):
-    day = ledger.get(today, {})
-    out = [{"name": c, "mb": round(b / 1e6, 1)} for c, b in day.items()]
+    """Today's per-app totals with the ↑/↓ split. Tolerates the pre-split schema
+    (a bare int) from an older ledger.json."""
+    out = []
+    for c, v in ledger.get(today, {}).items():
+        rx, tx = (v[0], v[1]) if isinstance(v, (list, tuple)) else (0, v)
+        out.append({"name": c, "rx_mb": round(rx / 1e6, 1),
+                    "tx_mb": round(tx / 1e6, 1), "mb": round((rx + tx) / 1e6, 1)})
     out.sort(key=lambda e: e["mb"], reverse=True)
     return out[:n]
 
@@ -675,7 +701,10 @@ def read_app_usage():
                 elif k == "IPEgressBytes" and v.isdigit():
                     tx = int(v)
             if rx > 0 or tx > 0:
-                talkers.append({"name": _pretty(unit), "mb": round((rx + tx) / 1e6, 1)})
+                talkers.append({"name": _pretty(unit),
+                                "rx_mb": round(max(rx, 0) / 1e6, 1),
+                                "tx_mb": round(max(tx, 0) / 1e6, 1),
+                                "mb": round((max(rx, 0) + max(tx, 0)) / 1e6, 1)})
     except Exception:
         return []
     talkers.sort(key=lambda t: t["mb"], reverse=True)

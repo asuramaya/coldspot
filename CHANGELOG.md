@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.19
+- Direction split ↑/↓ end-to-end (raichu phase A, task #14). The BPF maps always
+  tracked rx/tx separately but the daemon collapsed them into one number — so
+  today's "is this upload or download?" needed a manual dig. Now talkers, the
+  ledger, per-connection history, the systemd fallback, and status.json all carry
+  rx_mb/tx_mb alongside the combined mb, and `coldspot status`/`ledger`/`history`
+  render ↑up / ↓down. (claude reads as ↑1740 ↓66 at a glance.) The pre-split
+  ledger schema still decodes. `mb` is retained everywhere for older pill builds.
+  Unit suite 22 -> 23.
+
 ## 0.1.18
 - Name connections that predate the core load (v0.2.0 "raichu" phase A, task #12).
   The connect hook only fires on NEW connections, so anything already open when

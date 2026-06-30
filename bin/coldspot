@@ -102,9 +102,10 @@ def cmd_status(args):
         print(f"budget  : {used}/{b['limit_mb']} MB  ({b.get('pct')}%) {bar}{arm}")
     talkers = st.get("talkers") or []
     if talkers:
-        print(f"talkers : (via {st.get('source', '?')})")
+        print(f"talkers : (via {st.get('source', '?')})    ↑up / ↓down")
         for t in talkers[:8]:
-            print(f"  {t['mb']:>7.1f} MB  {t['name']}")
+            up, dn = t.get("tx_mb", 0), t.get("rx_mb", 0)
+            print(f"  {t['mb']:>7.1f} MB  ↑{up:>6.1f} ↓{dn:>6.1f}  {t['name']}")
     else:
         print("talkers : (none — enable systemd IPAccounting or the BPF core)")
     for a in st.get("advice") or []:
@@ -144,10 +145,11 @@ def cmd_history(args):
         return
     # busiest this month first; a 'M' marks the metered links (the ones that cost)
     rows = sorted(hist.items(), key=lambda kv: kv[1].get("month_mb", 0), reverse=True)
-    print(f"{'today':>9}  {'month':>9}   connection")
+    print(f"{'today':>9} ({'↑':>6}/{'↓':>6})  {'month':>9}   connection")
     for name, rec in rows:
         flag = "M" if rec.get("metered") else " "
-        print(f"{rec.get('today_mb', 0):>8.1f}  {rec.get('month_mb', 0):>8.1f}  "
+        print(f"{rec.get('today_mb', 0):>8.1f} ({rec.get('today_tx_mb', 0):>6.1f}/"
+              f"{rec.get('today_rx_mb', 0):>6.1f})  {rec.get('month_mb', 0):>8.1f}  "
               f"{flag} {name}")
 
 
@@ -162,9 +164,10 @@ def cmd_ledger(args):
     if not led:
         print("no ledger yet — needs the bpf core (sudo coldspot-bpf load).")
         return
-    print("today — what ate your data:")
+    print("today — what ate your data:    ↑up / ↓down")
     for e in led:
-        print(f"  {e['mb']:>8.1f} MB  {e['name']}")
+        up, dn = e.get("tx_mb", 0), e.get("rx_mb", 0)
+        print(f"  {e['mb']:>8.1f} MB  ↑{up:>7.1f} ↓{dn:>7.1f}  {e['name']}")
 
 
 def cmd_advise(args):
