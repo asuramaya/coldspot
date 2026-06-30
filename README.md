@@ -1,12 +1,15 @@
 # coldspot
 
-Keep a hotspot cold. coldspot meters your metered link, attributes every byte to
-the app that spent it, and — when you ask — drops everything on the wire except
-the one task you actually care about.
+Keep a hotspot cold. A metered link is **cold by default**: coldspot caps total
+speed to a smooth pipe, gives the task you care about priority *within* it, and
+attributes every byte to the app that spent it — so one bad pull, heavy page, or
+runaway agent swarm can't blow your data budget. It's protection against your own
+sloppy usage, applied automatically the moment you're on a metered network.
 
 It's the network sibling of [phanspeed](https://github.com/asuramaya/phanspeed):
 a daemon that owns the truth, a verb CLI over it, and a GNOME pill on top. Where
-phanspeed dials watts and EPP, coldspot dials a **data budget** and a **stance**.
+phanspeed dials watts and EPP, coldspot governs **bandwidth**, a **data budget**,
+and a **stance** — and tells you, in depth, where the data went.
 
 ```
 coldspot status            # MB used, budget, stance, top talkers
@@ -39,18 +42,22 @@ priority lane; `coldspot open` lifts everything.
 ## How it works
 Two halves behind one `status.json` seam:
 
-- **Meter** (`coldspotd`) — measures and attributes. **v0** reads `/proc/net/dev`
-  for the interface total and systemd per-unit IP accounting for per-app bytes —
-  zero exotic deps. **v1** loads a `cgroup/skb` eBPF program
-  (`bpf/coldspot.bpf.c`) that meters *and* enforces siege in one in-kernel pass;
-  the daemon reads its `usage` map and prefers it over systemd automatically.
-  The core builds and loads with only `clang` + `bpftool` (vendored helpers, no
-  libbpf-dev, no Go) — see `bin/coldspot-bpf` and `bpf/README.md`.
-- **Enforce** (`coldspot-stance`, root) — the only privileged piece: the nft
-  table, the `coldspot.slice` cgroup, the metered flag, the hog pausing.
+- **Meter** (`coldspotd`) — measures and attributes via a `cgroup/skb` eBPF core
+  (`bpf/coldspot.bpf.c`) that accounts per-app/per-destination and enforces the
+  verdict in one in-kernel pass; it falls back to `/proc/net/dev` + systemd IP
+  accounting when the core isn't loaded. It also keeps an hourly SQLite
+  time-series, watches the NetworkManager connection to auto-govern on roam, and
+  forecasts/flags anomalies. The core builds with only `clang` + `bpftool`
+  (vendored helpers, no libbpf-dev, no Go).
+- **Enforce** (`coldspot-stance`, root) — the only privileged piece: the **CAKE**
+  shaper (the smooth speed cap), the nft DSCP marking that gives warmed tasks the
+  priority tin, the eBPF `cold`/`siege` verdict + `critical` safe-list, and the
+  `coldspot.slice` cgroup that holds warmed tasks.
 
-The CLI and the GNOME pill only ever read `status.json`, so the v0→v1 kernel
-swap is invisible above the seam. See `bpf/README.md` for the kernel core.
+Cold is a capped pipe with priority inside it: warmed tasks (`uncap`/`run`) + DNS
+ride CAKE's latency tin, bulk gets the leftover, connectivity-critical services
+are never throttled, and nothing exceeds the cap. The CLI and GNOME pill only
+read `status.json`, so the kernel details stay below the seam.
 
 ## Why not just use OpenSnitch / vnstat?
 coldspot takes OpenSnitch's *shape* — per-app, kernel-sourced attribution — but
@@ -78,14 +85,24 @@ Per-app talkers in v0 need systemd IP accounting (the installer prints the
 one-liner). The v1 BPF core is built at install time — see `bpf/README.md`.
 
 ## Status
-v0.1.0 — meter + budget + stance enforcement runnable; live rate + daily
-rollover; budget auto-escalation to siege (`auto_siege` in `/etc/coldspot.conf`).
-BPF core compiles against the running kernel and loads via `bpftool`; the daemon
-reads its `usage` map (per-app) and `flows` map (per-destination, `coldspot
-flows`) when present. Now also: per-connection history + a persistent per-app
-ledger (`coldspot history`/`ledger`), and an advisor that flags P2P-seeding-style
-sustained upload (`coldspot advise`). Roadmap: per-app intensity within `lean`;
-surface history/ledger/advice in the pill.
+**v0.2.0 "raichu"** — cold-by-default governance + deep analysis, end-to-end:
+
+- **Govern** — `cold` auto-engages on metered links: a smooth CAKE speed cap with
+  warmed tasks + DNS prioritized inside it, a never-throttle floor for critical
+  connectivity, and a panic `coldspot open`. `coldspot limit <rate>` sets a hard
+  cap by hand; `coldspot uncap <app>` warms a task into the priority lane.
+- **Attribute** — per-app *and* per-destination, with the ↑/↓ split, pre-existing
+  connections resolved by name (no more `?`), and hostnames from a passive DNS
+  snoop.
+- **Analyse** — `coldspot top` (live ↑/↓), `coldspot report` (by connection/app
+  over day/week/month, from a SQLite time-series), `coldspot history`/`ledger`, a
+  budget **cap-ETA forecast**, and **learned anomaly detection** that flags an app
+  blowing past its own baseline.
+- **Cockpit** — the GNOME pill surfaces all of it and is tappable: stance, warm a
+  task, set a cap, and desktop notifications when the link goes cold or an app
+  misbehaves.
+
+Deferred: explicit per-app `cap <app> <rate>` and a hard ingress download cap.
 
 ## Develop
 ```sh

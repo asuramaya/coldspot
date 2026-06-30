@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 — "raichu"
+The cold-by-default governance + deep-analysis arc (v0.1.14–0.1.30), tagged.
+A metered link is now cold by default: total speed is capped to a smooth CAKE
+pipe, the task you warm gets priority within it, connectivity-critical traffic is
+never throttled, and nothing can exceed the cap — protection against your own
+sloppy usage, applied automatically on roam. Plus the full analysis stack (live
+`top`, `report` over a SQLite time-series, history/ledger, cap-ETA forecast,
+learned anomaly detection) and a tappable GNOME cockpit with notifications.
+Highlights, in the per-release notes below:
+- Govern: `cold` stance + auto-govern + critical safety floor + panic open +
+  `uncap` (#15-18); `coldspot limit` smooth cap + warmed-priority (#19-20).
+- Analyse: SQLite time-series, `top`, `report`, forecast + anomaly (#21-24).
+- Attribute: resolve `?` connections, ↑/↓ split (#12, #14).
+- Cockpit: pill control surface + notifications (#25-27).
+- Tighten: `make deploy`, BPF↔daemon layout contract test (#7-8).
+
 ## 0.1.30
 - The cockpit (raichu phase E, tasks #25-27). The GNOME pill is now a control
   surface, not just a readout:
