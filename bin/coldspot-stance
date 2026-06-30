@@ -104,6 +104,26 @@ table inet coldspot {
 EOF
 }
 
+# Smooth system-wide EGRESS cap (the "1 MB/s, spend it wisely" pipe). CAKE is the
+# right tool: one qdisc that shapes to the bandwidth accurately (it gets the
+# burst/quantum math right where hand-tuned HTB badly under-delivers on wifi) AND
+# does per-flow fairness for free, so no single connection hogs the trickle.
+# Falls back to a single-class HTB with a generous burst if sch_cake is absent.
+# Per-app priority / caps + ingress download policing land in task #20.
+shaper_setup() {
+  local iface="$1" bits="$2"
+  if tc qdisc replace dev "$iface" root cake bandwidth "${bits}bit" 2>/dev/null; then
+    return 0
+  fi
+  local burst=$(( bits / 800 )); [[ $burst -lt 1600 ]] && burst=1600   # ~10ms of rate
+  tc qdisc replace dev "$iface" root handle 1: htb default 1
+  tc class replace dev "$iface" parent 1: classid 1:1 \
+    htb rate "${bits}bit" ceil "${bits}bit" burst "${burst}b" cburst "${burst}b"
+  tc qdisc replace dev "$iface" parent 1:1 handle 10: fq_codel 2>/dev/null || true
+}
+
+shaper_clear() { tc qdisc del dev "$1" root 2>/dev/null || true; }
+
 pause_hogs() { for u in "${HOGS[@]}"; do systemctl stop "$u" 2>/dev/null || true; done; }
 
 case "${1:-}" in
@@ -145,6 +165,19 @@ case "${1:-}" in
       esac
     fi
     ;;
+  limit)
+    require_root
+    iface="${2:?usage: coldspot-stance limit <iface> <bits_per_sec>}"
+    bits="${3:?usage: coldspot-stance limit <iface> <bits_per_sec>}"
+    shaper_setup "$iface" "$bits"
+    echo "limit: ${iface} egress capped at ${bits} bit/s"
+    ;;
+  unlimit)
+    require_root
+    iface="${2:?usage: coldspot-stance unlimit <iface>}"
+    shaper_clear "$iface"
+    echo "limit cleared on ${iface}"
+    ;;
   allow)
     require_root; ensure_cgroup
     pid="${2:?usage: coldspot-stance allow <pid>}"
@@ -161,5 +194,5 @@ case "${1:-}" in
     exec systemd-run --slice="$SLICE" --scope --quiet -- "$@"
     ;;
   *)
-    echo "usage: coldspot-stance <stance|allow|run> ..." >&2; exit 1 ;;
+    echo "usage: coldspot-stance <stance|limit|unlimit|allow|run> ..." >&2; exit 1 ;;
 esac

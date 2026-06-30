@@ -416,6 +416,20 @@ def test_bpf_clear_map_deletes_each_key():
     assert deletes[1][-2:] == ["0x02", "0x00"], deletes[1]
 
 
+def test_cli_parse_rate():
+    # load the CLI module to test its pure rate parser (b=bits, B=bytes)
+    cli = importlib.machinery.SourceFileLoader(
+        "coldspot_cli", os.path.join(HERE, "bin", "coldspot"))
+    spec = importlib.util.spec_from_loader("coldspot_cli", cli)
+    cc = importlib.util.module_from_spec(spec)
+    cli.exec_module(cc)
+    assert cc._parse_rate("1mbps") == 1_000_000, "1mbps"
+    assert cc._parse_rate("500kbps") == 500_000, "500kbps"
+    assert cc._parse_rate("1MB/s") == 8_000_000, "1MB/s (bytes)"
+    assert cc._parse_rate("1mb/s") == 1_000_000, "1mb/s (bits)"
+    assert cc._parse_rate("2mbit") == 2_000_000, "2mbit"
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

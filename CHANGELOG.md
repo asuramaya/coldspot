@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.28
+- `coldspot limit <rate>` — a smooth, hard system-wide egress cap (raichu phase C,
+  task #19). Set a literal ceiling on the link: `coldspot limit 1mbps` / `500kbps`
+  / `1MB/s` (lowercase b = bits, uppercase B = bytes), `coldspot limit off` to
+  clear. Shaped with **CAKE** (`sch_cake`) — one qdisc that paces accurately
+  (where hand-tuned HTB badly under-delivered on wifi: ~24x too hard) and does
+  per-flow fairness for free, so no single connection hogs the trickle. Falls back
+  to single-class HTB with a generous burst if sch_cake is absent. Validated live:
+  uncapped 1896 KB/s -> 4mbit cap 210 KB/s, 8mbit cap 568 KB/s — a reliable
+  ceiling that scales with the setting (a single internet flow sits ~55% of
+  nominal by TCP/RTT/AQM nature; aggregate gets closer). Per-app priority within
+  the cap, per-app caps, and the ingress download cap land in task #20.
+
 ## 0.1.27
 - Warm-task ergonomics (raichu phase B, task #18). `coldspot uncap <pid|name>`
   warms a task so it keeps full speed under cold (and survives siege) — by pid or

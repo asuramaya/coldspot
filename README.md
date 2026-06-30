@@ -13,6 +13,7 @@ coldspot status            # MB used, budget, stance, top talkers
 coldspot budget 500        # cap this session at 500 MB; the pill heats up as you near it
 coldspot siege             # only the active task talks; everything else is dropped
 coldspot run -- rsync ...  # launch a job as *the* active task
+coldspot limit 1mbps       # hard system-wide egress cap; spend the trickle wisely
 coldspot uncap firefox     # warm a task: full speed even while everything's cold
 coldspot open              # panic release — lift all throttling/siege
 coldspot top               # live per-app ↑/↓ view (what's burning data right now)

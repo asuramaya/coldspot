@@ -15,6 +15,7 @@
   coldspot cold                         throttle everything except warmed tasks
   coldspot open                         panic release — lift all throttling/siege
   coldspot budget <MB|off>              session data ceiling; meter counts toward it
+  coldspot limit <rate|off>             hard egress speed cap (1mbps, 500kbps, 1MB/s)
   coldspot uncap <pid|name>             warm a task: full speed under cold/siege
   coldspot allow <pid|name>             alias of uncap (the by-pid primitive)
   coldspot run -- <cmd...>              launch a task warm (inside coldspot.slice)
@@ -318,6 +319,51 @@ def cmd_stance(args):
     print(f"stance -> {name}")
 
 
+def _parse_rate(s):
+    """Human rate -> bits/sec for tc. Standard units: lowercase b = bits,
+    uppercase B = bytes. So 1mbps = 1 Mbit/s, 1MB/s = 8 Mbit/s. Bare number =
+    bits/s."""
+    import re
+    is_bytes = "B" in s.split("/")[0]   # an explicit uppercase B means bytes
+    m = re.match(r"\s*(\d+(?:\.\d+)?)\s*([kmg]?)", s.lower())
+    if not m:
+        return None
+    val = float(m.group(1))
+    mult = {"": 1, "k": 1e3, "m": 1e6, "g": 1e9}[m.group(2)]
+    return int(val * mult * (8 if is_bytes else 1))
+
+
+def _default_iface():
+    try:
+        with open("/proc/net/route") as f:
+            for ln in f.readlines()[1:]:
+                p = ln.split()
+                if len(p) > 1 and p[1] == "00000000":   # default route
+                    return p[0]
+    except OSError:
+        pass
+    return None
+
+
+def cmd_limit(args):
+    """Set a smooth system-wide egress cap (HTB). Warmed tasks ride the priority
+    class; everything else shares the leftover trickle."""
+    if not args:
+        sys.exit("usage: coldspot limit <rate|off>   e.g. 1mbps, 500kbps, 1MB/s")
+    iface = (_status() or {}).get("iface") or _default_iface()
+    if not iface:
+        sys.exit("can't determine the interface (is coldspotd running?)")
+    if args[0] in ("off", "0", "none"):
+        sys.exit(_helper("unlimit", iface))
+    bits = _parse_rate(args[0])
+    if not bits or bits <= 0:
+        sys.exit(f"bad rate '{args[0]}' (try 1mbps, 500kbps, 1MB/s)")
+    rc = _helper("limit", iface, str(bits))
+    if rc == 0:
+        print(f"limit -> {args[0]} on {iface}  (~{bits // 1000} kbit/s total egress)")
+    sys.exit(rc)
+
+
 def cmd_budget(args):
     if not args:
         sys.exit("usage: coldspot budget <MB|off>")
@@ -424,7 +470,7 @@ def main():
         "history": cmd_history, "ledger": cmd_ledger, "advise": cmd_advise,
         "report": cmd_report,
         "budget": cmd_budget, "allow": cmd_allow, "uncap": cmd_uncap,
-        "run": cmd_run,
+        "limit": cmd_limit, "run": cmd_run,
         "reset": cmd_reset, "version": cmd_version,
         "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),
         "siege": lambda a: cmd_stance(["siege"]),
