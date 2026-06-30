@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.22
+- Persistent time-series store (raichu phase D, task #21). The JSON ledger answers
+  "today" but is shallow (14 days, no connection, no hour). The daemon now also
+  writes an hourly per-(connection, app) rx/tx series to a SQLite DB
+  (/var/lib/coldspot/coldspot.db) — the deep store `coldspot report` (next) will
+  query for "where did the month go on Brick" and "what did claude upload last
+  Tuesday". Per-app deltas now come from one shared `proc_deltas()` feeding both
+  the JSON ledger and the series; the old JSON ledger is imported once on first
+  run. 120-day retention, pruned on day rollover. Fully additive — the JSON path
+  still powers status.json, and telemetry failures never take the daemon down.
+  Unit suite 24 -> 27.
+
 ## 0.1.21
 - `coldspot top` — a live, refreshing per-app ↑/↓ view (raichu phase D, task #22).
   The one-command answer to "what's burning my data right now" that had to be

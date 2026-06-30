@@ -16,6 +16,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import time
 
@@ -26,6 +27,7 @@ STATUS = f"{RUN}/status.json"
 DAY_DB = f"{STATE}/usage.json"
 HISTORY_DB = f"{STATE}/history.json"  # per-connection daily/monthly rollups
 LEDGER_DB = f"{STATE}/ledger.json"    # per-day per-app bytes (survives reloads)
+TS_DB = f"{STATE}/coldspot.db"        # hourly (connection, app) time-series
 BPF_USAGE = "/sys/fs/bpf/coldspot/usage"  # v1 core's per-cgroup map (if loaded)
 BPF_FLOWS = "/sys/fs/bpf/coldspot/flows"  # per-destination breakdown (if loaded)
 BPF_DNS = "/sys/fs/bpf/coldspot/dns"      # captured DNS responses (if loaded)
@@ -637,25 +639,111 @@ def history_prune(history, keep_days=90, keep_months=24):
                 del b[k]
 
 
-def ledger_add(ledger, prev, cur, today):
-    """Accumulate per-app rx/tx deltas into today's ledger. proc_usage is
-    cumulative and is cleared on roam/reload, so a drop (cur < prev) is a reset —
-    count the current value as the delta instead of going negative. cur/prev are
-    {comm: [rx, tx]}; the day entry is [rx, tx]."""
-    day = ledger.setdefault(today, {})
+def proc_deltas(prev, cur):
+    """{comm: [drx, dtx]} positive byte deltas between two proc_usage snapshots.
+    proc_usage is cumulative and is cleared on roam/reload, so a drop (cur < prev)
+    is a reset — count the current value as the delta instead of going negative.
+    The single source of truth feeding both the JSON ledger and the time-series."""
+    out = {}
     for comm, (crx, ctx) in cur.items():
         prx, ptx = prev.get(comm, (0, 0))
         drx = crx - prx if crx >= prx else crx
         dtx = ctx - ptx if ctx >= ptx else ctx
         if drx > 0 or dtx > 0:
-            e = day.setdefault(comm, [0, 0])
-            e[0] += max(0, drx)
-            e[1] += max(0, dtx)
+            out[comm] = [max(0, drx), max(0, dtx)]
+    return out
+
+
+def ledger_add(ledger, deltas, today):
+    """Fold per-app [drx, dtx] deltas into today's ledger entry [rx, tx]."""
+    day = ledger.setdefault(today, {})
+    for comm, (drx, dtx) in deltas.items():
+        e = day.setdefault(comm, [0, 0])
+        e[0] += drx
+        e[1] += dtx
 
 
 def ledger_prune(ledger, keep_days=14):
     for k in sorted(ledger)[:max(0, len(ledger) - keep_days)]:
         del ledger[k]
+
+
+# ---- persistent time-series (SQLite) ---------------------------------------
+# The JSON ledger answers "today" but is shallow (14 days, no connection, no
+# hour). This is the deep store `coldspot report` queries: one hourly row per
+# (connection, app) with rx/tx, so "where did the month go on Brick" and "what
+# did claude upload last Tuesday" are answerable. Additive — the JSON path still
+# powers status.json; this just accumulates beside it.
+
+def ts_open(path):
+    """Open (creating) the time-series DB. Returns a connection, or None if
+    sqlite is somehow unavailable — the daemon must never die over telemetry."""
+    try:
+        db = sqlite3.connect(path)
+        db.execute("CREATE TABLE IF NOT EXISTS app_usage ("
+                   "hour TEXT, connection TEXT, metered INTEGER, app TEXT, "
+                   "rx INTEGER, tx INTEGER, "
+                   "PRIMARY KEY (hour, connection, app))")
+        db.commit()
+        return db
+    except Exception:
+        return None
+
+
+def ts_record(db, hour, connection, metered, deltas):
+    """Upsert per-app [drx, dtx] deltas into the (hour, connection, app) row."""
+    if db is None or not deltas:
+        return
+    rows = [(hour, connection or "?", 1 if metered else 0, app, d[0], d[1])
+            for app, d in deltas.items()]
+    try:
+        db.executemany(
+            "INSERT INTO app_usage (hour, connection, metered, app, rx, tx) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (hour, connection, app) DO UPDATE SET "
+            "rx = rx + excluded.rx, tx = tx + excluded.tx, "
+            "metered = excluded.metered", rows)
+        db.commit()
+    except Exception:
+        pass
+
+
+def ts_prune(db, keep_days=120):
+    """Drop rows older than keep_days (compared on the hour's date prefix)."""
+    if db is None:
+        return
+    cutoff = time.strftime("%Y-%m-%d",
+                           time.localtime(time.time() - keep_days * 86400))
+    try:
+        db.execute("DELETE FROM app_usage WHERE substr(hour, 1, 10) < ?", (cutoff,))
+        db.commit()
+    except Exception:
+        pass
+
+
+def ts_migrate_ledger(db, ledger):
+    """One-time best-effort import of the pre-existing JSON ledger (per-day,
+    per-app, no connection) so history isn't lost when the DB first appears.
+    Imports into hour=<date>T00, connection='?'. Skips if the DB already has
+    rows."""
+    if db is None or not ledger:
+        return
+    try:
+        if db.execute("SELECT 1 FROM app_usage LIMIT 1").fetchone():
+            return
+        rows = []
+        for date, apps in ledger.items():
+            for app, v in apps.items():
+                rx, tx = (v[0], v[1]) if isinstance(v, (list, tuple)) else (0, v)
+                rows.append((f"{date}T00", "?", 0, app, rx, tx))
+        if rows:
+            db.executemany(
+                "INSERT OR IGNORE INTO app_usage "
+                "(hour, connection, metered, app, rx, tx) VALUES (?,?,?,?,?,?)",
+                rows)
+            db.commit()
+    except Exception:
+        pass
 
 
 def history_summary(history, today):
@@ -761,6 +849,8 @@ def main():
     day = load_json(DAY_DB, {"rx": 0, "tx": 0})
     history = load_json(HISTORY_DB, {})   # per-connection day/month rollups
     ledger = load_json(LEDGER_DB, {})     # per-day per-app bytes (delta-summed)
+    ts = ts_open(TS_DB)                    # hourly (connection, app) time-series
+    ts_migrate_ledger(ts, ledger)         # one-time import of the JSON ledger
     prev_proc = {}                        # last proc_usage snapshot, for deltas
     proc_primed = False                   # skip the first delta (it's the baseline)
     last_attr_t = time.monotonic()        # for per-app rate (coldspot top)
@@ -825,6 +915,7 @@ def main():
         today = time.strftime("%Y-%m-%d")
         if day.get("date") != today:
             day = {"rx": 0, "tx": 0, "date": today}
+            ts_prune(ts)   # drop time-series rows past the retention window
 
         # 3) sample + delta (guard counter wrap / iface flap), derive live rate
         now = time.monotonic()
@@ -863,7 +954,10 @@ def main():
             if raw is not None:
                 tk = proc_talkers(raw)                     # per-process (best)
                 if proc_primed:
-                    ledger_add(ledger, prev_proc, raw, today)
+                    deltas = proc_deltas(prev_proc, raw)
+                    ledger_add(ledger, deltas, today)
+                    ts_record(ts, time.strftime("%Y-%m-%dT%H"),
+                              link_name, metered, deltas)
                     attach_rates(tk, raw, prev_proc, max(now - last_attr_t, 0.001))
                 talkers, src = tk, "proc"
                 prev_proc, proc_primed = raw, True

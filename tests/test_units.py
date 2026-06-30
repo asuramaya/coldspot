@@ -252,16 +252,49 @@ def test_advise_respects_off_switch():
     assert d.advise(flows, {"advise": False}) == []
 
 
-def test_ledger_add_deltas_and_reset():
-    # cumulative [rx, tx] input: ledger accumulates the per-direction delta.
-    led = {}
-    d.ledger_add(led, {}, {"curl": [100, 10]}, "2026-06-29")       # first vs {}
-    assert led["2026-06-29"]["curl"] == [100, 10], led
-    d.ledger_add(led, {"curl": [100, 10]}, {"curl": [250, 40]}, "2026-06-29")
-    assert led["2026-06-29"]["curl"] == [250, 40], led            # +150 rx, +30 tx
+def test_proc_deltas_and_reset():
+    # cumulative [rx, tx] snapshots -> positive per-direction deltas
+    assert d.proc_deltas({}, {"curl": [100, 10]}) == {"curl": [100, 10]}
+    assert d.proc_deltas({"curl": [100, 10]}, {"curl": [250, 40]}) \
+        == {"curl": [150, 30]}
     # a DROP (map cleared on roam/reload): count current value, never negative
-    d.ledger_add(led, {"curl": [250, 40]}, {"curl": [30, 5]}, "2026-06-29")
-    assert led["2026-06-29"]["curl"] == [280, 45], led            # reset -> +30/+5
+    assert d.proc_deltas({"curl": [250, 40]}, {"curl": [30, 5]}) \
+        == {"curl": [30, 5]}
+    # no change -> dropped
+    assert d.proc_deltas({"curl": [9, 9]}, {"curl": [9, 9]}) == {}
+
+
+def test_ledger_add_folds_deltas():
+    led = {}
+    d.ledger_add(led, {"curl": [100, 10]}, "2026-06-29")
+    d.ledger_add(led, {"curl": [150, 30], "gh": [5, 5]}, "2026-06-29")
+    assert led["2026-06-29"]["curl"] == [250, 40], led
+    assert led["2026-06-29"]["gh"] == [5, 5], led
+
+
+def test_timeseries_record_and_migrate():
+    db = d.ts_open(":memory:")
+    assert db is not None
+    h = "2026-06-29T14"
+    d.ts_record(db, h, "Brick", True, {"claude": [10, 700], "gh": [2, 1]})
+    d.ts_record(db, h, "Brick", True, {"claude": [5, 300]})   # upsert -> sums
+    row = db.execute("SELECT rx, tx, metered FROM app_usage "
+                     "WHERE hour=? AND connection='Brick' AND app='claude'",
+                     (h,)).fetchone()
+    assert row == (15, 1000, 1), row
+    # a different connection is a distinct row
+    d.ts_record(db, h, "emoji wifi", False, {"claude": [40, 1]})
+    n = db.execute("SELECT COUNT(*) FROM app_usage WHERE app='claude'").fetchone()[0]
+    assert n == 2, n
+
+
+def test_timeseries_migrate_skips_when_populated():
+    db = d.ts_open(":memory:")
+    d.ts_record(db, "2026-06-29T10", "Brick", True, {"x": [1, 1]})
+    before = db.execute("SELECT COUNT(*) FROM app_usage").fetchone()[0]
+    d.ts_migrate_ledger(db, {"2026-06-01": {"old": [5, 5]}})   # must be ignored
+    after = db.execute("SELECT COUNT(*) FROM app_usage").fetchone()[0]
+    assert after == before, (before, after)
 
 
 def test_ledger_prune_keeps_recent():
