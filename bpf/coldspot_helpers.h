@@ -29,6 +29,7 @@ static __u64 (*bpf_get_current_pid_tgid)(void) =
     (void *)BPF_FUNC_get_current_pid_tgid;
 static long (*bpf_get_current_comm)(void *buf, __u32 size) =
     (void *)BPF_FUNC_get_current_comm;
+static __u64 (*bpf_ktime_get_ns)(void) = (void *)BPF_FUNC_ktime_get_ns;
 
 #define bpf_htons(x) __builtin_bswap16(x)
 #define bpf_ntohs(x) __builtin_bswap16(x)

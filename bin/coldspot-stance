@@ -24,6 +24,15 @@ require_root() { [[ $EUID -eq 0 ]] || { echo "coldspot-stance: needs root" >&2; 
 bpf_loaded() { [[ -e "$PIN/policy" ]]; }
 slice_level() { awk -F/ '{print NF-4}' <<<"$CG"; }  # /sys/fs/cgroup/X -> 1
 
+# cold-stance egress floor in bytes/sec. "cripple almost" — default ~32 KiB/s
+# (~256 kbit/s): enough that nothing fully stalls, clearly throttled. Override
+# in /etc/coldspot.conf:  cold_floor_bps = 16384
+cold_floor() {
+  local f
+  f="$(sed -n 's/^[[:space:]]*cold_floor_bps[[:space:]]*=[[:space:]]*//p' /etc/coldspot.conf 2>/dev/null | tail -1)"
+  [[ "$f" =~ ^[0-9]+$ ]] && echo "$f" || echo 32768
+}
+
 # Point the bpf core at the coldspot.slice subtree as the siege survivor. The
 # core matches by ANCESTOR id, so every descendant (run-*.scope, loose) survives
 # even though each has its own cgroup id.
@@ -38,7 +47,13 @@ bpf_set_siege_target() {
 # siege, point it at the survivor subtree.
 bpf_apply() {
   "$BPF_HELPER" stance "$1"
-  [[ "$1" == "2" ]] && bpf_set_siege_target
+  # siege (2) and cold (3) both honour the warmed-task subtree; cold also needs
+  # its egress floor set.
+  if [[ "$1" == "2" || "$1" == "3" ]]; then bpf_set_siege_target; fi
+  if [[ "$1" == "3" ]]; then
+    local floor; floor="$(cold_floor)"
+    "$BPF_HELPER" throttle "$floor" "$((floor * 2))"
+  fi
 }
 
 ensure_cgroup() {
@@ -67,17 +82,40 @@ table inet coldspot {
 EOF
 }
 
+# Fallback throttle when the bpf core isn't loaded: a global egress rate limit.
+# Coarser than the bpf token bucket (it's one limiter for everything, and the
+# warmed task shares it), but it keeps the cold posture working without the core.
+nft_cold() {
+  ensure_cgroup
+  local kb=$(( ${1:-32768} / 1024 ))
+  [[ $kb -lt 1 ]] && kb=1
+  nft delete table inet coldspot 2>/dev/null || true
+  nft -f - <<EOF
+table inet coldspot {
+  chain out {
+    type filter hook output priority 0; policy accept;
+    oif "lo" accept
+    meta l4proto udp udp dport 53 accept
+    meta l4proto tcp tcp dport 53 accept
+    socket cgroupv2 level 1 "$SLICE" accept
+    limit rate over ${kb} kbytes/second drop
+  }
+}
+EOF
+}
+
 pause_hogs() { for u in "${HOGS[@]}"; do systemctl stop "$u" 2>/dev/null || true; done; }
 
 case "${1:-}" in
   stance)
     require_root
-    case "${2:-}" in open) n=0;; lean) n=1;; siege) n=2;;
-      *) echo "usage: coldspot-stance stance <open|lean|siege>" >&2; exit 1 ;;
+    case "${2:-}" in open) n=0;; lean) n=1;; siege) n=2;; cold) n=3;;
+      *) echo "usage: coldspot-stance stance <open|lean|siege|cold>" >&2; exit 1 ;;
     esac
     if bpf_loaded; then
       # v1: the kernel core enforces; nft stays out of the way.
       [[ $n == 1 ]] && pause_hogs
+      [[ $n == 3 ]] && pause_hogs   # cold also stops the background hogs outright
       [[ $n == 0 ]] && command -v tailscale >/dev/null && tailscale up >/dev/null 2>&1 || true
       bpf_apply "$n"
       echo "enforcement: ${2} (bpf core)"
@@ -98,6 +136,11 @@ case "${1:-}" in
           pause_hogs
           nft_siege
           echo "enforcement: siege (only $SLICE on the wire)"
+          ;;
+        cold)
+          pause_hogs
+          nft_cold "$(cold_floor)"
+          echo "enforcement: cold (egress throttled; nft fallback, no bpf core)"
           ;;
       esac
     fi

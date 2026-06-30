@@ -35,7 +35,7 @@ CONF = "/etc/coldspot.conf"
 SAMPLE = 2.0  # seconds between samples
 HERE = os.path.dirname(os.path.realpath(__file__))
 
-STANCES = ("open", "lean", "siege")
+STANCES = ("open", "lean", "siege", "cold")
 
 
 def metered_iface():
@@ -475,7 +475,7 @@ def advise(flows_full, conf):
 def load_conf():
     """Tiny key=val config: auto_siege + the advisor knobs."""
     conf = {"auto_siege": False, "advise": True,
-            "advise_tx_mb": 200, "advise_peers": 8}
+            "advise_tx_mb": 200, "advise_peers": 8, "cold_floor_bps": 32768}
     try:
         for ln in open(CONF):
             ln = ln.strip()
@@ -484,7 +484,7 @@ def load_conf():
             k, v = (x.strip() for x in ln.split("=", 1))
             if k in ("auto_siege", "advise"):
                 conf[k] = v.lower() in ("1", "true", "yes", "on")
-            elif k in ("advise_tx_mb", "advise_peers"):
+            elif k in ("advise_tx_mb", "advise_peers", "cold_floor_bps"):
                 try:
                     conf[k] = int(v)
                 except ValueError:

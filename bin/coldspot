@@ -8,8 +8,9 @@
   coldspot history [--json]             per-connection usage (today + this month)
   coldspot ledger [--json]              what ate today's data (survives reloads)
   coldspot advise [--json]              proactive nudges (e.g. P2P seeding)
-  coldspot stance <open|lean|siege>     the three stances; open = no-op
+  coldspot stance <open|lean|siege|cold>  the stances; open = no-op
   coldspot siege                        shortcut for `stance siege`
+  coldspot cold                         throttle everything except warmed tasks
   coldspot budget <MB|off>              session data ceiling; meter counts toward it
   coldspot allow <pid|name>             whitelist a task for siege (delegates to helper)
   coldspot run -- <cmd...>              launch a task inside the coldspot cgroup
@@ -27,7 +28,7 @@ RUN = "/run/coldspot"
 SOCK = f"{RUN}/control.sock"
 STATUS = f"{RUN}/status.json"
 STANCE_HELPER = "coldspot-stance"  # root helper, on PATH or next to us
-STANCES = ("open", "lean", "siege")
+STANCES = ("open", "lean", "siege", "cold")
 HERE = os.path.dirname(os.path.realpath(__file__))
 
 
@@ -275,6 +276,7 @@ def main():
         "reset": cmd_reset, "version": cmd_version,
         "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),
         "siege": lambda a: cmd_stance(["siege"]),
+        "cold": lambda a: cmd_stance(["cold"]),
     }
     fn = table.get(verb)
     if not fn:

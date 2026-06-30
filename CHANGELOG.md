@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.20
+- NEW `cold` stance — the governance core (raichu phase B, task #15). Where siege
+  drops everything outside the warmed task, cold *throttles* it: non-warmed egress
+  runs through a BPF token bucket (the floor, default ~32 KiB/s, `cold_floor_bps`
+  in the conf), while the warmed subtree (`coldspot allow`/`run`, the same target
+  siege uses), loopback, and DNS stay full-speed. Egress only — an ingress packet
+  has already crossed the metered link, so dropping it just causes retransmits.
+  `coldspot cold` / `coldspot stance cold`. Falls open if the floor is unset (no
+  black-holing on half-setup), and an nft `limit rate` fallback covers the
+  no-bpf-core case.
+  NOTE: this ships the *mechanism*; it does NOT auto-engage yet. The critical-
+  traffic safety floor + panic open (task #16) lands before auto-govern (#17) is
+  allowed to apply cold automatically on metered links. Verifier-validated on
+  load (`make deploy`); built + compiled clean here.
+
 ## 0.1.19
 - Direction split ↑/↓ end-to-end (raichu phase A, task #14). The BPF maps always
   tracked rx/tx separately but the daemon collapsed them into one number — so

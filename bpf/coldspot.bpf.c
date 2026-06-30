@@ -17,6 +17,7 @@
 #define STANCE_OPEN  0
 #define STANCE_LEAN  1
 #define STANCE_SIEGE 2
+#define STANCE_COLD  3   // metered default: throttle egress to a floor, warm tasks exempt
 
 struct bytes { __u64 rx; __u64 tx; };
 
@@ -177,6 +178,64 @@ struct {
   __type(value, __u32);
 } cfg SEC(".maps");
 
+// cold-stance egress throttle: a token bucket (bytes). Userspace writes `rate`
+// (bytes/sec floor) and `burst` (max tokens); tokens/last_ns are kernel state.
+// rate==0 means "not configured" -> fail OPEN (never black-hole on half-setup).
+struct throttle_state { __u64 tokens; __u64 last_ns; __u64 rate; __u64 burst; };
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, struct throttle_state);
+} throttle SEC(".maps");
+
+// Is this an egress DNS packet (dport 53)? Kept flowing even under cold so name
+// resolution never stalls. (The fuller critical-traffic set lands in task #16.)
+static __always_inline int is_dns_egress(struct __sk_buff *skb) {
+  __u16 dport = 0;
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
+    __u8 vihl = 0, proto = 0;
+    bpf_skb_load_bytes(skb, 0, &vihl, 1);
+    __u32 ihl = (vihl & 0x0F) * 4;
+    if (ihl < 20) return 0;
+    bpf_skb_load_bytes(skb, 9, &proto, 1);
+    if (proto != IPPROTO_UDP && proto != IPPROTO_TCP) return 0;
+    bpf_skb_load_bytes(skb, ihl + 2, &dport, 2);
+  } else if (skb->protocol == bpf_htons(ETH_P_IPV6)) {
+    __u8 nh = 0;
+    bpf_skb_load_bytes(skb, 6, &nh, 1);
+    if (nh != IPPROTO_UDP && nh != IPPROTO_TCP) return 0;
+    bpf_skb_load_bytes(skb, 42, &dport, 2);   // 40-byte v6 header + 2
+  } else {
+    return 0;
+  }
+  return bpf_ntohs(dport) == 53;
+}
+
+// Token-bucket gate for one egress packet. Returns 1 (pass) or 0 (drop). We
+// throttle EGRESS only: an ingress packet has already crossed the metered link
+// (the bytes are spent), and dropping it just triggers retransmits.
+static __always_inline int throttle_egress(struct __sk_buff *skb) {
+  __u32 z = 0;
+  struct throttle_state *t = bpf_map_lookup_elem(&throttle, &z);
+  if (!t || t->rate == 0) return 1;            // unconfigured -> fail open
+  __u64 now = bpf_ktime_get_ns();
+  __u64 last = t->last_ns;
+  if (now > last) {                            // replenish since last packet
+    __u64 add = (t->rate * (now - last)) / 1000000000ULL;
+    if (add) {
+      __u64 tok = t->tokens + add;
+      t->tokens = tok > t->burst ? t->burst : tok;
+      t->last_ns = now;
+    }
+  }
+  if (t->tokens >= skb->len) {                 // enough budget -> send
+    t->tokens -= skb->len;
+    return 1;
+  }
+  return 0;                                     // crippled to the floor
+}
+
 // per-destination accounting: parse IPv4 + TCP/UDP via skb_load_bytes (runtime
 // offsets are fine through the helper — no direct-access bounds gymnastics).
 static __always_inline void account_flow(struct __sk_buff *skb, int egress) {
@@ -262,6 +321,19 @@ static __always_inline int verdict(struct __sk_buff *skb, int egress) {
         bpf_skb_ancestor_cgroup_id(skb, s->level) == s->cgid)
       return 1;                                 // the survivor subtree
     return 0;                                   // drop everything else
+  }
+  // cold: the metered default. Cripple egress to a floor; warmed tasks (the
+  // siege survivor subtree, set by `allow`/`run`) and DNS keep full speed.
+  // Ingress is always passed — those bytes are already spent.
+  if (st && *st == STANCE_COLD) {
+    if (!egress) return 1;
+    if (skb->ifindex == 1) return 1;            // loopback
+    if (is_dns_egress(skb)) return 1;           // keep name resolution alive
+    struct siege_cfg *s = bpf_map_lookup_elem(&siege, &k);
+    if (s && s->cgid &&
+        bpf_skb_ancestor_cgroup_id(skb, s->level) == s->cgid)
+      return 1;                                 // explicitly uncapped (warm)
+    return throttle_egress(skb);                // everyone else -> the floor
   }
   return 1;
 }

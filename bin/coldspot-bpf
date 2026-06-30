@@ -9,8 +9,9 @@
 #   coldspot-bpf build              compile coldspot.bpf.o from local BTF
 #   coldspot-bpf load              load + attach to the cgroup-v2 root (multi)
 #   coldspot-bpf unload            detach + unpin
-#   coldspot-bpf stance <0|1|2>    write policy slot (open/lean/siege)
-#   coldspot-bpf allow <cgid>      add a cgroup id to the siege allowlist
+#   coldspot-bpf stance <0|1|2|3>  write policy slot (open/lean/siege/cold)
+#   coldspot-bpf throttle <Bps>    set the cold-stance egress floor (token bucket)
+#   coldspot-bpf allow <cgid>      add a cgroup id to the siege/uncap allowlist
 #   coldspot-bpf dump              raw usage map (debug)
 set -euo pipefail
 
@@ -73,9 +74,20 @@ case "${1:-}" in
     ;;
   stance)
     require_root
-    v="${2:?usage: coldspot-bpf stance <0|1|2>}"
+    v="${2:?usage: coldspot-bpf stance <0|1|2|3>}"   # 3 = cold (throttle)
     bpftool map update pinned "$PIN/policy" key 0 0 0 0 value "$v" 0 0 0
     echo "policy -> $v"
+    ;;
+  throttle)
+    require_root
+    rate="${2:?usage: coldspot-bpf throttle <bytes_per_sec> [burst_bytes]}"
+    burst="${3:-$rate}"
+    # struct throttle_state { u64 tokens; u64 last_ns; u64 rate; u64 burst } —
+    # reset tokens/last_ns to 0, set rate+burst. word-splitting is intended.
+    # shellcheck disable=SC2046
+    bpftool map update pinned "$PIN/throttle" key 0 0 0 0 \
+      value $(le64 0) $(le64 0) $(le64 "$rate") $(le64 "$burst")
+    echo "cold floor: $rate B/s (burst $burst)"
     ;;
   allow)
     require_root
@@ -92,5 +104,5 @@ case "${1:-}" in
     bpftool map dump pinned "$PIN/usage" -j 2>/dev/null || { echo "core not loaded"; exit 1; }
     ;;
   *)
-    echo "usage: coldspot-bpf <build|load|unload|stance|allow|dump>" >&2; exit 1 ;;
+    echo "usage: coldspot-bpf <build|load|unload|stance|throttle|allow|dump>" >&2; exit 1 ;;
 esac

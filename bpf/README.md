@@ -24,9 +24,10 @@ the systemd-IPAccounting reader in `bin/coldspotd`; everything above the
 | `sk_proc` | internal | socket cookie → `{pid, comm}`, written by the connect hooks |
 | `flows`  | kernel → user | LRU `{cgroup, family, ip(16B), port, proto} → {rx, tx}` per-destination (IPv4 + IPv6) |
 | `dns` / `dns_head` | kernel → user | ring of captured DNS response payloads; userspace parses A/AAAA → IP→host |
-| `policy` | user → kernel | one slot: `0 open / 1 lean / 2 siege` |
-| `siege`  | user → kernel | `{cgid, level}` — the survivor subtree; siege keeps any cgroup whose ancestor at `level` is `cgid` (so `coldspot.slice` + all its scopes), drops the rest |
-| `cfg`    | user → kernel | metered ifindex; when nonzero, accounting + siege apply only to that link |
+| `policy` | user → kernel | one slot: `0 open / 1 lean / 2 siege / 3 cold` |
+| `siege`  | user → kernel | `{cgid, level}` — the survivor / warmed subtree; siege keeps (and cold un-throttles) any cgroup whose ancestor at `level` is `cgid` (so `coldspot.slice` + all its scopes) |
+| `throttle` | user → kernel | cold-stance egress token bucket `{tokens, last_ns, rate, burst}`; `rate` (B/s) is the floor, `rate==0` fails open |
+| `cfg`    | user → kernel | metered ifindex; when nonzero, accounting + siege/cold apply only to that link |
 
 Programs: `cgroup_skb/egress` + `/ingress` (meter + verdict), `cgroup/connect4` +
 `connect6` (record socket→process). The ingress program also captures DNS before
@@ -42,6 +43,14 @@ naming the IPs needs the DNS-answer snoop (next tier).
 (`app-gnome-firefox-1234.scope` → `firefox`), writes `status.json`; on
 `coldspot stance siege` it sets `policy[0]=2` and fills `allow` from
 `coldspot.slice`.
+
+**Cold stance** (`policy[0]=3`, the metered default) is siege's gentler sibling:
+instead of dropping everything outside the warmed subtree, it runs non-warmed
+**egress** through the `throttle` token bucket (the floor), and passes the warmed
+subtree, loopback, and DNS at full speed. Ingress is never dropped — those bytes
+already crossed the metered link, so dropping them only causes retransmits. The
+warmed subtree is the same `siege`-map target, so `coldspot allow`/`run` warm a
+task under cold exactly as they spare one under siege.
 
 ## Build + load — only `clang` + `bpftool`, no Go, no libbpf-dev
 The core vendors its handful of helpers (`coldspot_helpers.h`, IDs pulled from

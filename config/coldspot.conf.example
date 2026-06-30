@@ -6,6 +6,11 @@
 # stay in siege until you explicitly act, then it can re-arm.
 auto_siege = off
 
+# Cold stance (coldspot cold): throttle ALL egress to this floor except tasks you
+# explicitly warm up (coldspot allow/run) and DNS. Bytes/second; "cripple almost"
+# default is 32768 (~256 kbit/s). Lower it to bite harder.
+# cold_floor_bps = 32768
+
 # Units the `lean` stance pauses (space-separated). Uncomment to override the
 # default (packagekit snapd fwupd-refresh unattended-upgrades).
 # lean_hogs = packagekit snapd fwupd-refresh unattended-upgrades
