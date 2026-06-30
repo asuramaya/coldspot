@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.23
+- `coldspot report [today|week|month]` (raichu phase D, task #23) — the deep
+  breakdown the time-series was built for. Reads the SQLite store (read-only) and
+  rolls it up by connection and by app with the ↑/↓ split, so "where did the month
+  go on Brick" is one command (claude ↑1800 MB, etc.). `--json` for scripting.
+  Pure userspace over the DB the daemon fills. Verified end-to-end (daemon writer
+  → CLI reader).
+
 ## 0.1.22
 - Persistent time-series store (raichu phase D, task #21). The JSON ledger answers
   "today" but is shallow (14 days, no connection, no hour). The daemon now also

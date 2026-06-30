@@ -7,6 +7,7 @@
   coldspot top                          live per-app ↑/↓ view (refreshes; ctrl-c)
   coldspot flows [--json]               per-destination breakdown (needs bpf core)
   coldspot history [--json]             per-connection usage (today + this month)
+  coldspot report [today|week|month]    deep breakdown by connection + app (sqlite)
   coldspot ledger [--json]              what ate today's data (survives reloads)
   coldspot advise [--json]              proactive nudges (e.g. P2P seeding)
   coldspot stance <open|lean|siege|cold>  the stances; open = no-op
@@ -28,6 +29,7 @@ import sys
 RUN = "/run/coldspot"
 SOCK = f"{RUN}/control.sock"
 STATUS = f"{RUN}/status.json"
+TS_DB = "/var/lib/coldspot/coldspot.db"   # the daemon's time-series (read-only)
 STANCE_HELPER = "coldspot-stance"  # root helper, on PATH or next to us
 STANCES = ("open", "lean", "siege", "cold")
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -180,6 +182,64 @@ def cmd_top(args):
         pass
 
 
+def _report_window(period):
+    """(sql_condition, params, label) selecting an hour-range from app_usage."""
+    import time
+    if period == "today":
+        d = time.strftime("%Y-%m-%d")
+        return "substr(hour,1,10) = ?", (d,), f"today ({d})"
+    if period == "week":
+        wk = time.strftime("%Y-%m-%d", time.localtime(time.time() - 6 * 86400))
+        return "substr(hour,1,10) >= ?", (wk,), f"last 7 days (since {wk})"
+    ym = time.strftime("%Y-%m")
+    return "substr(hour,1,7) = ?", (ym,), f"this month ({ym})"
+
+
+def cmd_report(args):
+    import sqlite3
+    period = next((a for a in args if a in ("today", "week", "month")), "month")
+    cond, params, label = _report_window(period)
+    try:
+        db = sqlite3.connect(f"file:{TS_DB}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        sys.exit("no time-series yet — needs the bpf core and a running daemon.")
+    try:
+        by_conn = db.execute(
+            f"SELECT connection, SUM(rx), SUM(tx), MAX(metered) FROM app_usage "
+            f"WHERE {cond} GROUP BY connection "
+            f"ORDER BY SUM(rx)+SUM(tx) DESC", params).fetchall()
+        by_app = db.execute(
+            f"SELECT app, SUM(rx), SUM(tx) FROM app_usage WHERE {cond} "
+            f"GROUP BY app ORDER BY SUM(rx)+SUM(tx) DESC LIMIT 15", params).fetchall()
+    except sqlite3.OperationalError:
+        sys.exit("no time-series yet — needs the bpf core and a running daemon.")
+    finally:
+        db.close()
+    if "--json" in args:
+        print(json.dumps({"period": period,
+                          "connections": [{"connection": c, "metered": bool(m),
+                                           "rx_mb": round(rx / 1e6, 1),
+                                           "tx_mb": round(tx / 1e6, 1)}
+                                          for c, rx, tx, m in by_conn],
+                          "apps": [{"app": a, "rx_mb": round(rx / 1e6, 1),
+                                    "tx_mb": round(tx / 1e6, 1)}
+                                   for a, rx, tx in by_app]}, indent=2))
+        return
+    if not by_conn:
+        print(f"report — {label}: no data yet.")
+        return
+    print(f"report — {label}    ↑up / ↓down")
+    print("by connection:")
+    for c, rx, tx, m in by_conn:
+        flag = "M" if m else " "
+        print(f"  {(rx + tx) / 1e6:>9.1f} MB  ↑{tx / 1e6:>8.1f} ↓{rx / 1e6:>8.1f}"
+              f"  {flag} {c}")
+    print("by app:")
+    for a, rx, tx in by_app:
+        print(f"  {(rx + tx) / 1e6:>9.1f} MB  ↑{tx / 1e6:>8.1f} ↓{rx / 1e6:>8.1f}"
+              f"  {a}")
+
+
 def cmd_history(args):
     st = _status()
     if st is None:
@@ -320,6 +380,7 @@ def main():
         "status": cmd_status, "flows": cmd_flows, "stance": cmd_stance,
         "top": cmd_top,
         "history": cmd_history, "ledger": cmd_ledger, "advise": cmd_advise,
+        "report": cmd_report,
         "budget": cmd_budget, "allow": cmd_allow, "run": cmd_run,
         "reset": cmd_reset, "version": cmd_version,
         "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),
