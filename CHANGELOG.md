@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.25
+- Critical-traffic safety floor + panic open (raichu phase B, task #16) — the
+  guardrail that must exist before cold can auto-engage. Cold now never throttles
+  (a) DNS/DHCP/NTP by destination port, or (b) connectivity-critical *services*
+  (NetworkManager, systemd-resolved, timesyncd, coldspotd, coldspot-update…)
+  matched by cgroup id via a new BPF `critical` map the daemon fills each tick.
+  So governance can't sever the machine's own connectivity or block its updates.
+  Added `coldspot open` — a panic release that lifts all throttling/siege,
+  enforce-first so it works even if the daemon is down. Verifier-validated on
+  load; the critical map populates live (5 service cgroups registered on this
+  box). Unit suite 30 -> 31.
+
 ## 0.1.24
 - Forecast + learned anomaly detection (raichu phase D, task #24) — completes the
   analysis pillar. The daemon now projects a budget **cap ETA** at your session-

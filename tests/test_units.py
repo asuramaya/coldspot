@@ -224,6 +224,29 @@ def test_enrich_unknown_flows():
     assert flows[1]["app"] == "curl", flows   # already named, untouched
 
 
+def test_set_critical_cgroups_encodes_cgid():
+    calls = []
+    save = (d.os.path.exists, d.os.stat, d.subprocess.run)
+
+    class _S:
+        st_ino = 0x0102
+
+    d.os.path.exists = lambda p: True
+    d.os.stat = lambda p: _S()
+    d.subprocess.run = lambda cmd, *a, **k: calls.append(cmd)
+    try:
+        d.set_critical_cgroups()
+    finally:
+        d.os.path.exists, d.os.stat, d.subprocess.run = save
+    assert calls, "no map update issued"
+    c = calls[0]
+    assert c[:4] == ["bpftool", "map", "update", "pinned"], c
+    assert c[5] == "key", c
+    # cgid 0x0102 little-endian = 0x02 0x01 0x00 ...
+    assert c[6] == "0x02" and c[7] == "0x01", c
+    assert c[-2] == "value" and c[-1] == "0x01", c   # value byte
+
+
 def test_budget_eta():
     # used 100 MB in 100 s -> 1 MB/s; 400 MB left -> 400 s to cap
     eta = d.budget_eta(100_000_000, 500_000_000, 100, 1000.0)

@@ -13,6 +13,7 @@
   coldspot stance <open|lean|siege|cold>  the stances; open = no-op
   coldspot siege                        shortcut for `stance siege`
   coldspot cold                         throttle everything except warmed tasks
+  coldspot open                         panic release — lift all throttling/siege
   coldspot budget <MB|off>              session data ceiling; meter counts toward it
   coldspot allow <pid|name>             whitelist a task for siege (delegates to helper)
   coldspot run -- <cmd...>              launch a task inside the coldspot cgroup
@@ -392,6 +393,7 @@ def main():
         "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),
         "siege": lambda a: cmd_stance(["siege"]),
         "cold": lambda a: cmd_stance(["cold"]),
+        "open": lambda a: cmd_stance(["open"]),   # panic release
     }
     fn = table.get(verb)
     if not fn:

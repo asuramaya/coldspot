@@ -189,27 +189,43 @@ struct {
   __type(value, struct throttle_state);
 } throttle SEC(".maps");
 
-// Is this an egress DNS packet (dport 53)? Kept flowing even under cold so name
-// resolution never stalls. (The fuller critical-traffic set lands in task #16.)
-static __always_inline int is_dns_egress(struct __sk_buff *skb) {
+// Critical service cgroups (NetworkManager, systemd-resolved, coldspot-update,
+// dhcp/ntp clients) — the daemon writes their cgroup ids here. Cold never
+// throttles a packet whose cgroup is in this set, so governance can't sever the
+// machine's own connectivity or block its updates.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, 64);
+  __type(key, __u64);
+  __type(value, __u8);
+} critical SEC(".maps");
+
+// Critical egress that must never be throttled, by destination port: DNS (53),
+// DHCP (67/68), NTP (123) — the keep-the-lights-on set. Service-level criticals
+// (NetworkManager, resolved, coldspot-update) are matched by cgroup id via the
+// `critical` map instead, since they're indistinguishable by port.
+static __always_inline int is_critical_egress(struct __sk_buff *skb) {
   __u16 dport = 0;
+  __u8 l4 = 0;
   if (skb->protocol == bpf_htons(ETH_P_IP)) {
-    __u8 vihl = 0, proto = 0;
+    __u8 vihl = 0;
     bpf_skb_load_bytes(skb, 0, &vihl, 1);
     __u32 ihl = (vihl & 0x0F) * 4;
     if (ihl < 20) return 0;
-    bpf_skb_load_bytes(skb, 9, &proto, 1);
-    if (proto != IPPROTO_UDP && proto != IPPROTO_TCP) return 0;
+    bpf_skb_load_bytes(skb, 9, &l4, 1);
+    if (l4 != IPPROTO_UDP && l4 != IPPROTO_TCP) return 0;
     bpf_skb_load_bytes(skb, ihl + 2, &dport, 2);
   } else if (skb->protocol == bpf_htons(ETH_P_IPV6)) {
-    __u8 nh = 0;
-    bpf_skb_load_bytes(skb, 6, &nh, 1);
-    if (nh != IPPROTO_UDP && nh != IPPROTO_TCP) return 0;
+    bpf_skb_load_bytes(skb, 6, &l4, 1);
+    if (l4 != IPPROTO_UDP && l4 != IPPROTO_TCP) return 0;
     bpf_skb_load_bytes(skb, 42, &dport, 2);   // 40-byte v6 header + 2
   } else {
     return 0;
   }
-  return bpf_ntohs(dport) == 53;
+  __u16 p = bpf_ntohs(dport);
+  if (l4 == IPPROTO_UDP && (p == 53 || p == 67 || p == 68 || p == 123)) return 1;
+  if (l4 == IPPROTO_TCP && p == 53) return 1;   // DNS over TCP
+  return 0;
 }
 
 // Token-bucket gate for one egress packet. Returns 1 (pass) or 0 (drop). We
@@ -328,7 +344,8 @@ static __always_inline int verdict(struct __sk_buff *skb, int egress) {
   if (st && *st == STANCE_COLD) {
     if (!egress) return 1;
     if (skb->ifindex == 1) return 1;            // loopback
-    if (is_dns_egress(skb)) return 1;           // keep name resolution alive
+    if (bpf_map_lookup_elem(&critical, &cg)) return 1;  // critical services
+    if (is_critical_egress(skb)) return 1;      // DNS/DHCP/NTP keep flowing
     struct siege_cfg *s = bpf_map_lookup_elem(&siege, &k);
     if (s && s->cgid &&
         bpf_skb_ancestor_cgroup_id(skb, s->level) == s->cgid)

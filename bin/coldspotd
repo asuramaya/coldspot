@@ -33,6 +33,7 @@ BPF_FLOWS = "/sys/fs/bpf/coldspot/flows"  # per-destination breakdown (if loaded
 BPF_DNS = "/sys/fs/bpf/coldspot/dns"      # captured DNS responses (if loaded)
 BPF_PROC = "/sys/fs/bpf/coldspot/proc_usage"  # per-process bytes (if loaded)
 BPF_CFG = "/sys/fs/bpf/coldspot/cfg"      # metered ifindex (set by us, if loaded)
+BPF_CRITICAL = "/sys/fs/bpf/coldspot/critical"  # never-throttle service cgroups
 CONF = "/etc/coldspot.conf"
 SAMPLE = 2.0  # seconds between samples
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -581,6 +582,34 @@ def bpf_reset_usage():
         _bpf_clear_map(p)
 
 
+# Connectivity-critical services that cold must never throttle (matched by
+# cgroup id, since they're indistinguishable from other HTTPS by port).
+CRITICAL_UNITS = ("NetworkManager.service", "systemd-resolved.service",
+                  "systemd-timesyncd.service", "chrony.service",
+                  "chronyd.service", "wpa_supplicant.service",
+                  "dhcpcd.service", "dhclient.service",
+                  "coldspot-update.service", "coldspotd.service")
+
+
+def set_critical_cgroups():
+    """Write connectivity-critical service cgroup ids into the BPF `critical`
+    map. Cheap and idempotent; cgroup ids only change when a service restarts,
+    so refreshing on the attribution tick is plenty. No-op if the core or the
+    units aren't present."""
+    if not os.path.exists(BPF_CRITICAL):
+        return
+    for unit in CRITICAL_UNITS:
+        path = f"/sys/fs/cgroup/system.slice/{unit}"
+        try:
+            cgid = os.stat(path).st_ino
+        except OSError:
+            continue
+        b = cgid.to_bytes(8, "little")
+        subprocess.run(["bpftool", "map", "update", "pinned", BPF_CRITICAL,
+                        "key", *(f"0x{x:02x}" for x in b), "value", "0x01"],
+                       capture_output=True, timeout=3)
+
+
 def read_proc_raw():
     """{comm: total_bytes} from the BPF `proc_usage` map, full precision.
     None if the core isn't loaded. The basis for both the talker list and the
@@ -1039,6 +1068,7 @@ def main():
                 anomalies = detect_anomalies(ts, today, conf)
             advice = advise(flows_full, conf) + anomalies   # nudges + anomalies
             set_metered_cfg(iface)   # keep the core pinned to the metered link
+            set_critical_cgroups()   # keep cold from throttling NM/DNS/updates
             history_prune(history)
             ledger_prune(ledger)
             atomic_write(HISTORY_DB, history)

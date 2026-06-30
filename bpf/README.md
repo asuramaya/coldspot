@@ -27,6 +27,7 @@ the systemd-IPAccounting reader in `bin/coldspotd`; everything above the
 | `policy` | user → kernel | one slot: `0 open / 1 lean / 2 siege / 3 cold` |
 | `siege`  | user → kernel | `{cgid, level}` — the survivor / warmed subtree; siege keeps (and cold un-throttles) any cgroup whose ancestor at `level` is `cgid` (so `coldspot.slice` + all its scopes) |
 | `throttle` | user → kernel | cold-stance egress token bucket `{tokens, last_ns, rate, burst}`; `rate` (B/s) is the floor, `rate==0` fails open |
+| `critical` | user → kernel | `cgroup_id → 1` for connectivity-critical services (NetworkManager, resolved, coldspot-update…); cold never throttles these, plus DNS/DHCP/NTP by port |
 | `cfg`    | user → kernel | metered ifindex; when nonzero, accounting + siege/cold apply only to that link |
 
 Programs: `cgroup_skb/egress` + `/ingress` (meter + verdict), `cgroup/connect4` +
