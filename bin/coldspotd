@@ -480,7 +480,7 @@ def load_conf():
     conf = {"auto_siege": False, "advise": True,
             "advise_tx_mb": 200, "advise_peers": 8, "cold_floor_bps": 32768,
             "anomaly": True, "anomaly_factor": 3.0, "anomaly_floor_mb": 200,
-            "auto_govern": True}
+            "auto_govern": True, "cold_cap_bits": 2000000}
     try:
         for ln in open(CONF):
             ln = ln.strip()
@@ -490,7 +490,7 @@ def load_conf():
             if k in ("auto_siege", "advise", "anomaly", "auto_govern"):
                 conf[k] = v.lower() in ("1", "true", "yes", "on")
             elif k in ("advise_tx_mb", "advise_peers", "cold_floor_bps",
-                       "anomaly_floor_mb"):
+                       "anomaly_floor_mb", "cold_cap_bits"):
                 try:
                     conf[k] = int(v)
                 except ValueError:
@@ -1113,6 +1113,7 @@ def main():
             "stance": stance, "source": src,
             "auto_siege": conf["auto_siege"], "rate_bps": rate,
             "auto_govern": conf.get("auto_govern", True), "governed": auto_governed,
+            "cap_bits": conf.get("cold_cap_bits") if stance == "cold" else None,
             "flows": flows,
             "session": {"rx_mb": round(sess["rx"] / 1e6, 1),
                         "tx_mb": round(sess["tx"] / 1e6, 1),

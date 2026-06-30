@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.30
+- The cockpit (raichu phase E, tasks #25-27). The GNOME pill is now a control
+  surface, not just a readout:
+  - Display: live ↓/↑ rate, per-app ↑/↓ totals, the connection + metered flag, a
+    governed badge ("❄ auto-cold ≤ 2 Mbit — warm a task to prioritize it") with
+    the active cap, budget % and the cap-ETA forecast. Pill turns blue under cold.
+  - Interactions: one-tap stance (open/lean/cold/siege), **tap any app to warm it**
+    (uncap → priority lane), a Speed-cap submenu (1 Mbit/500 kbit/off), Release-all
+    (open), and reset.
+  - Notifications: a desktop note when the link auto-goes-cold on a metered
+    network, when the budget crosses warn/over, and when a new advisory/anomaly
+    fires.
+  - Daemon surfaces `cap_bits` in status.json; extension version -> 2 (reloads on
+    next login). Validated against live status.json on Brick (governed=cold,
+    cap_bits=2000000); pill render needs a logout/login (Wayland).
+
 ## 0.1.29
 - Direct the trickle wisely (raichu phase C, task #20). Cold is now a smooth
   CAKE cap with PRIORITY inside it, not a crude drop-floor: warmed tasks
