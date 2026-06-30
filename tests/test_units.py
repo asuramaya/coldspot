@@ -224,6 +224,41 @@ def test_enrich_unknown_flows():
     assert flows[1]["app"] == "curl", flows   # already named, untouched
 
 
+def test_budget_eta():
+    # used 100 MB in 100 s -> 1 MB/s; 400 MB left -> 400 s to cap
+    eta = d.budget_eta(100_000_000, 500_000_000, 100, 1000.0)
+    assert eta == 1000 + 400, eta
+    # already over -> now
+    assert d.budget_eta(600_000_000, 500_000_000, 100, 1000.0) == 1000, "over"
+    # no cap / no pace -> None
+    assert d.budget_eta(0, 0, 100, 1000.0) is None
+    assert d.budget_eta(0, 500_000_000, 100, 1000.0) is None
+
+
+def test_detect_anomalies():
+    db = d.ts_open(":memory:")
+    # 4 prior days of ~100 MB/day for claude, then a 900 MB spike today
+    for day in range(25, 29):
+        d.ts_record(db, f"2026-06-{day}T12", "Brick", True, {"claude": [50_000_000, 50_000_000]})
+    d.ts_record(db, "2026-06-29T12", "Brick", True, {"claude": [100_000_000, 800_000_000]})
+    # a quiet app today, below the floor -> never flagged
+    d.ts_record(db, "2026-06-29T12", "Brick", True, {"chronyd": [1_000_000, 1_000_000]})
+    conf = {"anomaly": True, "anomaly_factor": 3.0, "anomaly_floor_mb": 200}
+    out = d.detect_anomalies(db, "2026-06-29", conf)
+    assert len(out) == 1, out
+    assert out[0]["app"] == "claude" and out[0]["kind"] == "anomaly", out
+    assert out[0]["today_mb"] == 900.0 and out[0]["baseline_mb"] == 100.0, out
+
+
+def test_detect_anomalies_needs_history():
+    db = d.ts_open(":memory:")
+    # only today's data, no baseline -> nothing fires (no false positive on day 1)
+    d.ts_record(db, "2026-06-29T12", "Brick", True, {"claude": [0, 5_000_000_000]})
+    assert d.detect_anomalies(db, "2026-06-29",
+                              {"anomaly": True, "anomaly_factor": 3.0,
+                               "anomaly_floor_mb": 200}) == []
+
+
 def test_advise_flags_seeding():
     # one app fanning upload across many peers -> flagged; thresholds at default
     conf = {"advise": True, "advise_tx_mb": 200, "advise_peers": 8}

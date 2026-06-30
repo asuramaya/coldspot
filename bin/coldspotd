@@ -477,18 +477,25 @@ def advise(flows_full, conf):
 def load_conf():
     """Tiny key=val config: auto_siege + the advisor knobs."""
     conf = {"auto_siege": False, "advise": True,
-            "advise_tx_mb": 200, "advise_peers": 8, "cold_floor_bps": 32768}
+            "advise_tx_mb": 200, "advise_peers": 8, "cold_floor_bps": 32768,
+            "anomaly": True, "anomaly_factor": 3.0, "anomaly_floor_mb": 200}
     try:
         for ln in open(CONF):
             ln = ln.strip()
             if not ln or ln.startswith("#") or "=" not in ln:
                 continue
             k, v = (x.strip() for x in ln.split("=", 1))
-            if k in ("auto_siege", "advise"):
+            if k in ("auto_siege", "advise", "anomaly"):
                 conf[k] = v.lower() in ("1", "true", "yes", "on")
-            elif k in ("advise_tx_mb", "advise_peers", "cold_floor_bps"):
+            elif k in ("advise_tx_mb", "advise_peers", "cold_floor_bps",
+                       "anomaly_floor_mb"):
                 try:
                     conf[k] = int(v)
+                except ValueError:
+                    pass
+            elif k == "anomaly_factor":
+                try:
+                    conf[k] = float(v)
                 except ValueError:
                     pass
     except OSError:
@@ -721,6 +728,58 @@ def ts_prune(db, keep_days=120):
         pass
 
 
+def budget_eta(used_b, limit_b, elapsed_s, now_epoch):
+    """Epoch when the session will hit its cap at the average pace so far, or
+    None if there's no cap / no pace yet. now_epoch if already over."""
+    if limit_b <= 0 or elapsed_s <= 0:
+        return None
+    rem = limit_b - used_b
+    if rem <= 0:
+        return int(now_epoch)
+    avg_bps = used_b / elapsed_s
+    if avg_bps <= 0:
+        return None
+    return int(now_epoch + rem / avg_bps)
+
+
+def detect_anomalies(db, today, conf):
+    """Flag apps using far more today than their learned daily baseline — the
+    seeding advisor generalized into learned anomaly detection. Needs a few days
+    of history before it will fire, so a fresh DB raises nothing."""
+    if db is None or not conf.get("anomaly", True):
+        return []
+    factor = float(conf.get("anomaly_factor", 3.0))
+    floor_b = int(conf.get("anomaly_floor_mb", 200)) * 1_000_000
+    min_days = 3
+    out = []
+    try:
+        today_rows = db.execute(
+            "SELECT app, SUM(rx + tx) FROM app_usage "
+            "WHERE substr(hour,1,10) = ? GROUP BY app", (today,)).fetchall()
+        for app, tot in today_rows:
+            if tot is None or tot < floor_b:
+                continue
+            base = db.execute(
+                "SELECT substr(hour,1,10) d, SUM(rx + tx) FROM app_usage "
+                "WHERE app = ? AND substr(hour,1,10) < ? GROUP BY d",
+                (app, today)).fetchall()
+            if len(base) < min_days:
+                continue
+            avg = sum(b[1] for b in base) / len(base)
+            if avg <= 0 or tot < avg * factor:
+                continue
+            out.append({"app": app, "kind": "anomaly",
+                        "today_mb": round(tot / 1e6, 1),
+                        "baseline_mb": round(avg / 1e6, 1),
+                        "hint": f"{app} has used {round(tot / 1e6)} MB today — "
+                                f"about {round(tot / avg)}x its usual "
+                                f"{round(avg / 1e6)} MB/day."})
+    except Exception:
+        return []
+    out.sort(key=lambda x: x["today_mb"], reverse=True)
+    return out
+
+
 def ts_migrate_ledger(db, ledger):
     """One-time best-effort import of the pre-existing JSON ledger (per-day,
     per-app, no connection) so history isn't lost when the DB first appears.
@@ -860,6 +919,8 @@ def main():
     escalated = False
     flows = []
     advice = []
+    anomalies = []
+    attr_n = 0
     dns_names = {}
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -973,7 +1034,10 @@ def main():
             if flows_full:
                 enrich_unknown_flows(flows_full)  # name pre-load connections
             flows = flows_full[:20] if flows_full else []
-            advice = advise(flows_full, conf)   # seeding / sustained-upload nudge
+            attr_n += 1
+            if attr_n % 6 == 1:   # ~once a minute: learned per-app anomalies
+                anomalies = detect_anomalies(ts, today, conf)
+            advice = advise(flows_full, conf) + anomalies   # nudges + anomalies
             set_metered_cfg(iface)   # keep the core pinned to the metered link
             history_prune(history)
             ledger_prune(ledger)
@@ -983,9 +1047,11 @@ def main():
         # 5) budget + publish
         used_mb = (sess["rx"] + sess["tx"]) / 1e6
         pct = round(100 * used_mb / budget) if budget else None
-        bstate = "off"
+        bstate, eta = "off", None
         if budget:
             bstate = "over" if pct >= 100 else "warn" if pct >= 80 else "ok"
+            eta = budget_eta(sess["rx"] + sess["tx"], budget * 1e6,
+                             int(time.time()) - sess["since"], time.time())
 
         # budget auto-escalation: cross the ceiling -> siege, once, if armed
         if bstate == "over" and conf["auto_siege"] and stance != "siege" \
@@ -1004,7 +1070,7 @@ def main():
             "day": {"rx_mb": round(day["rx"] / 1e6, 1),
                     "tx_mb": round(day["tx"] / 1e6, 1)},
             "budget": {"limit_mb": budget, "used_mb": round(used_mb, 1),
-                       "pct": pct, "state": bstate},
+                       "pct": pct, "state": bstate, "eta": eta},
             "talkers": talkers,
             "history": history_summary(history, today),
             "ledger": ledger_top(ledger, today),

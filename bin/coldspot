@@ -104,6 +104,12 @@ def cmd_status(args):
         bar = {"ok": "·", "warn": "▲", "over": "⚠"}.get(b.get("state"), "")
         arm = "  [auto-siege armed]" if st.get("auto_siege") else ""
         print(f"budget  : {used}/{b['limit_mb']} MB  ({b.get('pct')}%) {bar}{arm}")
+        eta = b.get("eta")
+        if eta:
+            import time as _t
+            when = _t.strftime("%a %H:%M", _t.localtime(eta))
+            tag = "already over" if b.get("state") == "over" else f"cap ~{when}"
+            print(f"forecast: {tag}  (at your average pace)")
     talkers = st.get("talkers") or []
     if talkers:
         print(f"talkers : (via {st.get('source', '?')})    ↑up / ↓down")

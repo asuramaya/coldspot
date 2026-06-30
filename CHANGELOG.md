@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.24
+- Forecast + learned anomaly detection (raichu phase D, task #24) — completes the
+  analysis pillar. The daemon now projects a budget **cap ETA** at your session-
+  average pace (status.json `budget.eta`; `coldspot status` shows
+  "forecast: cap ~Tue 06:05"), and runs **learned anomaly detection** off the
+  time-series: an app using far more today than its own daily baseline is flagged
+  (e.g. "claude has used 1400 MB today — about 8x its usual 180 MB/day"),
+  generalizing the seeding advisor. Needs a few days of history before it fires,
+  so a fresh DB raises nothing. Tunable: `anomaly`, `anomaly_factor`,
+  `anomaly_floor_mb`. Unit suite 27 -> 30.
+
 ## 0.1.23
 - `coldspot report [today|week|month]` (raichu phase D, task #23) — the deep
   breakdown the time-series was built for. Reads the SQLite store (read-only) and

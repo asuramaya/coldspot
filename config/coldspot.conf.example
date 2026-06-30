@@ -21,3 +21,10 @@ auto_siege = off
 # advise = on
 # advise_tx_mb = 200      # min total upload (MB) by one app to flag
 # advise_peers = 8        # min distinct peers it uploads to (fan-out)
+
+# Learned anomaly detection: flag an app using far more today than its own daily
+# baseline (from the time-series; needs a few days of history before it fires).
+# Surfaced alongside advice in status / `coldspot status` / `advise`.
+# anomaly = on
+# anomaly_factor = 3      # flag at >= this multiple of the app's usual daily total
+# anomaly_floor_mb = 200  # ignore apps under this many MB today (no noise)
