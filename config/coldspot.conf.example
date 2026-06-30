@@ -11,6 +11,12 @@ auto_siege = off
 # default is 32768 (~256 kbit/s). Lower it to bite harder.
 # cold_floor_bps = 32768
 
+# Auto-govern: automatically enter `cold` whenever the active connection is
+# metered, and release to `open` when it isn't — cold by default on the hotspot,
+# no action needed. A manual stance (incl. `coldspot open`) pauses this until the
+# next roam. Connectivity-critical traffic is never throttled. ON by default.
+# auto_govern = on
+
 # Units the `lean` stance pauses (space-separated). Uncomment to override the
 # default (packagekit snapd fwupd-refresh unattended-upgrades).
 # lean_hogs = packagekit snapd fwupd-refresh unattended-upgrades

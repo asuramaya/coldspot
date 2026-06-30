@@ -96,6 +96,11 @@ def cmd_status(args):
     used = b.get("used_mb", 0)
     print(f"link    : {st.get('connection') or '?'} on {st.get('iface')}  "
           f"(metered {st.get('metered')}, stance {st.get('stance')})")
+    if st.get("governed"):
+        print("govern  : auto-cold (metered) — warm a task with `coldspot run/uncap`, "
+              "release with `coldspot open`")
+    elif st.get("auto_govern") and st.get("metered"):
+        print("govern  : auto-govern on (will cold this metered link)")
     r = st.get("rate_bps") or {}
     if r:
         print(f"rate    : down {_human(r.get('rx', 0))}   up {_human(r.get('tx', 0))}")

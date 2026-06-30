@@ -479,14 +479,15 @@ def load_conf():
     """Tiny key=val config: auto_siege + the advisor knobs."""
     conf = {"auto_siege": False, "advise": True,
             "advise_tx_mb": 200, "advise_peers": 8, "cold_floor_bps": 32768,
-            "anomaly": True, "anomaly_factor": 3.0, "anomaly_floor_mb": 200}
+            "anomaly": True, "anomaly_factor": 3.0, "anomaly_floor_mb": 200,
+            "auto_govern": True}
     try:
         for ln in open(CONF):
             ln = ln.strip()
             if not ln or ln.startswith("#") or "=" not in ln:
                 continue
             k, v = (x.strip() for x in ln.split("=", 1))
-            if k in ("auto_siege", "advise", "anomaly"):
+            if k in ("auto_siege", "advise", "anomaly", "auto_govern"):
                 conf[k] = v.lower() in ("1", "true", "yes", "on")
             elif k in ("advise_tx_mb", "advise_peers", "cold_floor_bps",
                        "anomaly_floor_mb"):
@@ -946,6 +947,8 @@ def main():
     stance, budget = "open", None
     conf = load_conf()
     escalated = False
+    auto_governed = False      # daemon is currently holding an auto-applied cold
+    manual_override = False     # user set a stance by hand -> pause auto-govern
     flows = []
     advice = []
     anomalies = []
@@ -981,6 +984,9 @@ def main():
                 if req.get("stance") in STANCES:
                     stance = req["stance"]
                     escalated = False  # a manual stance clears the auto latch
+                    # user took the wheel: pause auto-govern until the next roam
+                    manual_override = True
+                    auto_governed = False
                 if "budget" in req:
                     budget = req["budget"]  # MB or None
                     escalated = False
@@ -1039,7 +1045,20 @@ def main():
                 bpf_reset_usage()
                 talkers, flows = [], []
                 prev_proc, proc_primed = {}, False
+                manual_override = False   # new connection -> auto-govern re-decides
             metered, link_name = new_metered, new_link
+
+            # auto-govern: cold by default on a metered link, released on an
+            # unmetered one. The safety floor (critical map + DNS/DHCP/NTP) keeps
+            # connectivity alive; `coldspot open` (a manual set) pauses this until
+            # the next roam. Reuses the metered signal above; ~10s to react.
+            if conf.get("auto_govern", True) and not manual_override:
+                if metered and not auto_governed and stance != "cold":
+                    if enforce("cold"):
+                        stance, auto_governed = "cold", True
+                elif not metered and auto_governed:
+                    if enforce("open"):
+                        stance, auto_governed = "open", False
             raw = read_proc_raw()
             if raw is not None:
                 tk = proc_talkers(raw)                     # per-process (best)
@@ -1093,6 +1112,7 @@ def main():
             "iface": iface, "connection": link_name, "metered": metered,
             "stance": stance, "source": src,
             "auto_siege": conf["auto_siege"], "rate_bps": rate,
+            "auto_govern": conf.get("auto_govern", True), "governed": auto_governed,
             "flows": flows,
             "session": {"rx_mb": round(sess["rx"] / 1e6, 1),
                         "tx_mb": round(sess["tx"] / 1e6, 1),

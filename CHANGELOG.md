@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.26
+- Auto-govern (raichu phase B, task #17) — the cold-by-default payoff. The daemon
+  now automatically enters `cold` whenever the active connection is metered and
+  releases to `open` when it isn't, reusing the roam signal. A manual stance
+  (including `coldspot open`) pauses auto-govern until the next roam; the safety
+  floor (critical services + DNS/DHCP/NTP, v0.1.25) keeps connectivity alive
+  throughout. ON by default (`auto_govern`), matching "cripple almost, only
+  explicit uncapping." status.json gains `auto_govern` + `governed`; `coldspot
+  status` shows the govern line. Validated live: on an unmetered link it stays
+  open (governed=false) and does not throttle — the metered→cold engage will show
+  on the next hotspot visit. Warm a task to keep it full-speed: `coldspot run` /
+  `allow` (friendlier `uncap` next).
+
 ## 0.1.25
 - Critical-traffic safety floor + panic open (raichu phase B, task #16) — the
   guardrail that must exist before cold can auto-engage. Cold now never throttles
