@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.27
+- Warm-task ergonomics (raichu phase B, task #18). `coldspot uncap <pid|name>`
+  warms a task so it keeps full speed under cold (and survives siege) — by pid or
+  by the exact process name that `coldspot top`/talkers show; it moves the task
+  into coldspot.slice, the warmed subtree. `allow` is now an alias, and name
+  matching is exact-only on purpose (a fuzzy command-line match would warm
+  unrelated processes — including the CLI itself). Verified live: a task lands in
+  coldspot.slice/loose and is exempt under cold. (Per-app smooth-rate `cap` rides
+  with the tc/EDT shaper in phase C, task #20.)
+
 ## 0.1.26
 - Auto-govern (raichu phase B, task #17) — the cold-by-default payoff. The daemon
   now automatically enters `cold` whenever the active connection is metered and

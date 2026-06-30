@@ -15,8 +15,9 @@
   coldspot cold                         throttle everything except warmed tasks
   coldspot open                         panic release — lift all throttling/siege
   coldspot budget <MB|off>              session data ceiling; meter counts toward it
-  coldspot allow <pid|name>             whitelist a task for siege (delegates to helper)
-  coldspot run -- <cmd...>              launch a task inside the coldspot cgroup
+  coldspot uncap <pid|name>             warm a task: full speed under cold/siege
+  coldspot allow <pid|name>             alias of uncap (the by-pid primitive)
+  coldspot run -- <cmd...>              launch a task warm (inside coldspot.slice)
   coldspot reset [session|day]          zero the accountant
   coldspot update [--check|--json]      pull newer releases (auto-checked daily)
   coldspot version | help
@@ -332,9 +333,38 @@ def cmd_budget(args):
     print(f"budget -> {mb} MB")
 
 
+def _pids_for(target):
+    """[pids] for a pid, or for a process by exact name (the comm that talkers /
+    `coldspot top` show). Exact-only on purpose: a fuzzy command-line match would
+    catch unrelated processes that merely mention the name (including this CLI)."""
+    if target.isdigit():
+        return [target]
+    out = subprocess.run(["pgrep", "-x", target], capture_output=True, text=True).stdout
+    return out.split()
+
+
+def cmd_uncap(args):
+    """Warm a task so it keeps full speed under cold (and survives siege). By pid
+    or process name; the task moves into coldspot.slice, the warmed subtree."""
+    if not args:
+        sys.exit("usage: coldspot uncap <pid|name>")
+    target = args[0]
+    pids = _pids_for(target)
+    if not pids:
+        sys.exit(f"no process matching '{target}'")
+    rc = 0
+    for p in pids:
+        rc |= _helper("allow", p)
+    print(f"warmed {target} ({len(pids)} pid(s)) — full speed even under cold")
+    sys.exit(rc)
+
+
 def cmd_allow(args):
     if not args:
         sys.exit("usage: coldspot allow <pid|name>")
+    # allow is the by-pid primitive; uncap adds name resolution on top
+    if not args[0].isdigit():
+        return cmd_uncap(args)
     sys.exit(_helper("allow", args[0]))
 
 
@@ -393,7 +423,8 @@ def main():
         "top": cmd_top,
         "history": cmd_history, "ledger": cmd_ledger, "advise": cmd_advise,
         "report": cmd_report,
-        "budget": cmd_budget, "allow": cmd_allow, "run": cmd_run,
+        "budget": cmd_budget, "allow": cmd_allow, "uncap": cmd_uncap,
+        "run": cmd_run,
         "reset": cmd_reset, "version": cmd_version,
         "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),
         "siege": lambda a: cmd_stance(["siege"]),
