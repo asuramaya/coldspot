@@ -252,6 +252,30 @@ def rank_links(links):
     return [i for i, _ in connected]
 
 
+# auto-steer hysteresis: a candidate must stay clearly better for this many
+# attribution ticks (~10s each) before we switch the primary; and no two
+# switches inside the cooldown — so it can't ping-pong between near-equal links.
+STEER_HYSTERESIS = 3
+STEER_COOLDOWN = 90
+
+
+def steer_better(cand, cur):
+    """Is `cand` CLEARLY a better primary than `cur`? A strictly better health
+    class, or the same class with a real (>=6 dB) signal margin. Requiring a
+    margin is what stops two near-equal radios from flip-flopping."""
+    if not cur or not cur.get("connected"):
+        return bool(cand and cand.get("connected"))   # dead primary -> failover
+    if not cand:
+        return False
+    cs, us = _SCORE_RANK.get(cand.get("score"), 5), _SCORE_RANK.get(cur.get("score"), 5)
+    if cs != us:
+        return cs < us
+    cd, ud = cand.get("signal_dbm"), cur.get("signal_dbm")
+    if cd is not None and ud is not None:
+        return (cd - ud) >= 6
+    return False
+
+
 def _le(arr):
     """little-endian byte list (bpftool -j) -> int."""
     v = 0
@@ -633,14 +657,14 @@ def load_conf():
     conf = {"auto_siege": False, "advise": True,
             "advise_tx_mb": 200, "advise_peers": 8, "cold_floor_bps": 32768,
             "anomaly": True, "anomaly_factor": 3.0, "anomaly_floor_mb": 200,
-            "auto_govern": True, "cold_cap_bits": 2000000}
+            "auto_govern": True, "cold_cap_bits": 2000000, "auto_steer": True}
     try:
         for ln in open(CONF):
             ln = ln.strip()
             if not ln or ln.startswith("#") or "=" not in ln:
                 continue
             k, v = (x.strip() for x in ln.split("=", 1))
-            if k in ("auto_siege", "advise", "anomaly", "auto_govern"):
+            if k in ("auto_siege", "advise", "anomaly", "auto_govern", "auto_steer"):
                 conf[k] = v.lower() in ("1", "true", "yes", "on")
             elif k in ("advise_tx_mb", "advise_peers", "cold_floor_bps",
                        "anomaly_floor_mb", "cold_cap_bits"):
@@ -1232,6 +1256,8 @@ def main():
     applied_pol = None          # policy the reconciler currently holds applied
     applied_net = None          # network it was applied for
     applied_sif = None          # iface stabilize is applied to (for teardown)
+    steer_streak = 0            # ticks a healthier radio has beaten the primary
+    last_steer_t = 0.0          # monotonic time of the last auto-steer switch
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -1404,6 +1430,25 @@ def main():
                     if ok:                        # commit; else retry next tick
                         applied_pol, applied_net = pol, net
                         auto_governed = (pol != "open")
+
+            # auto-steer: keep the primary route on the healthiest radio, entirely
+            # hands-free. Instant failover if the primary died; otherwise a rival
+            # must stay CLEARLY better for STEER_HYSTERESIS ticks AND clear the
+            # cooldown before we switch — so two near-equal radios never ping-pong.
+            if conf.get("auto_steer", True) and links:
+                ranked = rank_links(links)
+                best = ranked[0] if ranked else None
+                prim_h = links.get(act_if)
+                prim_dead = not (prim_h and prim_h.get("connected"))
+                if best and best != act_if and steer_better(links[best], prim_h):
+                    steer_streak += 1
+                else:
+                    steer_streak = 0
+                if best and best != act_if and (prim_dead or steer_streak >= STEER_HYSTERESIS) \
+                        and (prim_dead or (now - last_steer_t) > STEER_COOLDOWN):
+                    if _stance_helper("steer", best):
+                        last_steer_t, steer_streak = now, 0
+
             raw = read_proc_raw()
             if raw is not None:
                 tk = proc_talkers(raw)                     # per-process (best)
@@ -1463,6 +1508,7 @@ def main():
             "stabilized": applied_sif is not None, "policies": policies,
             "primary": next((i for i, h in links.items() if h.get("active")), None),
             "best_link": (rank_links(links) or [None])[0],
+            "auto_steer": conf.get("auto_steer", True),
             "flows": flows,
             "session": {"rx_mb": round(sess["rx"] / 1e6, 1),
                         "tx_mb": round(sess["tx"] / 1e6, 1),

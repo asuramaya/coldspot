@@ -533,6 +533,22 @@ def test_rank_links():
     assert d.rank_links({}) == []
 
 
+def test_steer_better():
+    good = {"connected": True, "score": "good", "signal_dbm": -55}
+    ok = {"connected": True, "score": "ok", "signal_dbm": -70}
+    down = {"connected": False, "score": "down"}
+    assert d.steer_better(good, ok) is True      # better health class wins
+    assert d.steer_better(ok, good) is False     # worse class never switches
+    assert d.steer_better(ok, down) is True      # dead primary -> failover
+    assert d.steer_better(None, down) is False   # nothing to switch to
+    # same class needs a >=6 dB signal margin (anti-ping-pong)
+    same = {"connected": True, "score": "ok"}
+    assert d.steer_better({**same, "signal_dbm": -64},
+                          {**same, "signal_dbm": -70}) is True    # 6 dB
+    assert d.steer_better({**same, "signal_dbm": -67},
+                          {**same, "signal_dbm": -70}) is False   # only 3 dB
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

@@ -22,6 +22,12 @@ auto_siege = off
 # next roam. Connectivity-critical traffic is never throttled. ON by default.
 # auto_govern = on
 
+# Auto-steer: with more than one wifi radio, keep the default route on the
+# healthiest one automatically — instant failover if the primary drops, and a
+# clear-margin + hysteresis rule so two near-equal radios never ping-pong. Set a
+# radio manually any time with `coldspot steer <iface>`. ON by default.
+# auto_steer = on
+
 # Units the `lean` stance pauses (space-separated). Uncomment to override the
 # default (packagekit snapd fwupd-refresh unattended-upgrades).
 # lean_hogs = packagekit snapd fwupd-refresh unattended-upgrades
