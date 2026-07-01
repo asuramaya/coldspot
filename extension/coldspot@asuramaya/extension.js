@@ -35,6 +35,16 @@ function humanBits(bits) {
     return `${b.toFixed(1)} Gbit/s`;
 }
 
+// the layer-1/2 axis in the pill: a 4-bar signal glyph by health score
+const SIG_BARS = { good: '▂▄▆█', ok: '▂▄▆_', weak: '▂▄__',
+                   bad: '▂___', down: '____', unknown: '____' };
+
+function activeLink(st) {
+    const links = st.links || {};
+    for (const k in links) if (links[k].active) return links[k];
+    return null;
+}
+
 const Pill = GObject.registerClass(
 class Pill extends PanelMenu.Button {
     _init() {
@@ -167,7 +177,10 @@ class Pill extends PanelMenu.Button {
         const r = st.rate_bps || {};
         const conn = st.connection || st.iface || '?';
         const m = st.metered ? ' ·metered' : '';
-        this._header.label.text = `${conn}${m} · ${stance} · ↓${humanRate(r.rx)} ↑${humanRate(r.tx)}`;
+        const lk = activeLink(st);
+        const sig = (lk && lk.signal_dbm != null)
+            ? `${SIG_BARS[lk.score] || '____'} ${lk.signal_dbm}dBm  ` : '';
+        this._header.label.text = `${sig}${conn}${m} · ${stance} · ↓${humanRate(r.rx)} ↑${humanRate(r.tx)}`;
 
         const dayMb = ((st.day?.rx_mb ?? 0) + (st.day?.tx_mb ?? 0)).toFixed(1);
         let bline = limit

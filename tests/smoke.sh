@@ -26,11 +26,12 @@ assert json.loads(s.recv(4096))["ok"]; s.close()
 time.sleep(2.5)
 st = json.load(open(run + "/status.json"))
 for k in ("iface", "stance", "source", "rate_bps", "session", "budget",
-          "talkers", "flows", "auto_siege", "history", "ledger", "advice"):
+          "talkers", "flows", "links", "auto_siege", "history", "ledger", "advice"):
     assert k in st, f"missing {k}"
 assert st["stance"] == "siege", st["stance"]
 assert st["budget"]["limit_mb"] == 100, st["budget"]
 assert isinstance(st["flows"], list), st["flows"]
+assert isinstance(st["links"], dict), st["links"]
 assert isinstance(st["history"], dict), st["history"]
 assert isinstance(st["ledger"], list), st["ledger"]
 assert isinstance(st["advice"], list), st["advice"]

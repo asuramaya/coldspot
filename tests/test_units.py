@@ -430,6 +430,91 @@ def test_cli_parse_rate():
     assert cc._parse_rate("2mbit") == 2_000_000, "2mbit"
 
 
+def test_freq_to_channel():
+    assert d._freq_to_channel(5180) == 36, "ch36"
+    assert d._freq_to_channel(5745) == 149, "ch149"
+    assert d._freq_to_channel(5805) == 161, "ch161"
+    assert d._freq_to_channel(2412) == 1, "ch1"
+    assert d._freq_to_channel(2484) == 14, "ch14"
+    assert d._freq_to_channel(None) is None
+    assert d._band(5180) == "5GHz" and d._band(2412) == "2.4GHz" \
+        and d._band(5955) == "6GHz"
+
+
+def test_link_score():
+    assert d.link_score({"connected": True, "signal_dbm": -55,
+                         "tx_packets": 1000, "tx_failed": 2}) == "good"
+    assert d.link_score({"connected": True, "signal_dbm": -70}) == "ok"
+    assert d.link_score({"connected": True, "signal_dbm": -80}) == "weak"
+    assert d.link_score({"connected": True, "signal_dbm": -86}) == "bad"
+    assert d.link_score({"connected": False}) == "down"
+    # loss demotes an otherwise-strong link
+    assert d.link_score({"connected": True, "signal_dbm": -60,
+                         "tx_packets": 100, "tx_failed": 30}) == "weak"
+
+
+def test_read_link_health_parse():
+    LINK = ("Connected to 5e:76:95:9a:d7:d2 (on wlx0)\n\tSSID: xfinitywifi\n"
+            "\tfreq: 5180.0\n\tsignal: -82 dBm\n\ttx bitrate: 6.0 MBit/s\n"
+            "\trx bitrate: 27.0 MBit/s VHT-MCS 1")
+    STA = "\ttx packets:\t1000\n\ttx retries:\t40\n\ttx failed:\t12"
+
+    class _R:
+        def __init__(s, o): s.stdout = o
+
+    def fake_run(cmd, *a, **k):
+        if cmd[3] == "link":
+            return _R(LINK)
+        if "station" in cmd:
+            return _R(STA)
+        if "power_save" in cmd:
+            return _R("Power save: on")
+        return _R("")
+
+    real = d.subprocess.run
+    d.subprocess.run = fake_run
+    try:
+        h = d.read_link_health("wlx0")
+    finally:
+        d.subprocess.run = real
+    assert h["connected"] and h["ssid"] == "xfinitywifi", h
+    assert h["signal_dbm"] == -82 and h["channel"] == 36 and h["band"] == "5GHz", h
+    assert h["tx_mbps"] == 6.0 and h["rx_mbps"] == 27.0, h
+    assert h["tx_failed"] == 12 and h["power_save"] is True, h
+    assert d.link_score(h) == "weak", h
+
+
+def test_ts_record_link():
+    db = d.ts_open(":memory:")
+    for hh in ({"connected": True, "signal_dbm": -82},
+               {"connected": True, "signal_dbm": -86},
+               {"connected": False},                       # a drop -> fade, no sig
+               {"connected": True, "signal_dbm": -78}):
+        d.ts_record_link(db, "2026-07-01T14", "wlx0", "xfinitywifi", hh)
+    row = db.execute("SELECT samples, sig_samples, sig_sum, sig_min, sig_max, "
+                     "fades FROM link_health").fetchone()
+    # 4 samples, 3 carried signal; the disconnect neither skews sig nor min/max
+    assert row == (4, 3, -246, -86, -78, 1), row
+
+
+def test_policy_decide():
+    store = {}
+    # new networks seed from the two axes and are remembered
+    assert d.policy_decide(store, "Brick", True, "good") == ("cold", True)
+    assert d.policy_decide(store, "xfinitywifi", False, "weak") == ("stabilize", True)
+    assert d.policy_decide(store, "Home", False, "good") == ("open", True)
+    # a remembered network is honoured — the live metered flag no longer masters
+    assert d.policy_decide(store, "xfinitywifi", True, "good") == ("stabilize", False)
+    assert store["Brick"]["source"] == "seeded"
+    # active_net keys on the active link's SSID (unifying xfinity's several names)
+    links = {"wlx": {"active": True, "ssid": "xfinitywifi"},
+             "wlp": {"active": False, "ssid": "Brick"}}
+    assert d.active_net(links, "xf-usb") == "xfinitywifi"
+    # never guess from a connection name — no active SSID means HOLD (None)
+    assert d.active_net({}, "SomeConn") is None
+    assert d.active_net({"wlx": {"active": True, "ssid": None}}) is None
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

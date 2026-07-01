@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.0 — the link-aware axis
+coldspot gains a second sense. Until now it knew *how much* data moved and *who*
+spent it; now it also knows *how good the link is* — signal, PHY rate, channel,
+loss, fades. A link can be connected and still be dying, and coldspot was blind
+to that. The governing principle: it already governs the **scarce** link (metered
+→ `cold`); now it also understands the **bad** link (weak → `stabilize`). Same
+daemon→status.json→CLI/pill spine, one new sensor and a few new verbs.
+- **Sense** — a link-health collector reads per-wifi-iface signal/bitrate/
+  channel/BSSID/tx-retries via `iw`, derives a health score, and publishes a
+  `links` map in status.json plus an hourly `link_health` time-series (avg/min
+  signal + fade counts per connection).
+- **See** — `coldspot link` (per-interface health board), `coldspot aim` (live
+  signal meter for antenna positioning), link-reliability stats in `coldspot
+  report`, and a signal glyph in the GNOME pill header.
+- **Stabilize** — `coldspot stabilize` smooths a weak/lossy link: an egress CAKE
+  cap with **ack-filter** (a weak uplink chokes on ACKs and starves the downlink)
+  + honest RTT, **download-side AQM via an IFB mirror** so inbound bufferbloat
+  can't build, warmed-task/DNS priority, and power-save forced off. `stabilize
+  auto` sizes the cap from the link's live PHY rate — a shaper that follows the
+  RF instead of guessing, so it never cripples a healthy link.
+- **Network memory (the policy pivot)** — coldspot stops *reacting* to NM's
+  `metered` flag and instead owns a persistent, SSID-keyed **per-network policy
+  store** (`/var/lib/coldspot/policy.json`). On roam it applies *its own*
+  remembered policy (`open`/`cold`/`stabilize`) for that network; a new network
+  is seeded from two independent axes — metered→cold (economic), weak signal→
+  stabilize (quality) — then remembered. NM's flag is demoted to one seed, no
+  longer the master. `coldspot policy` shows the memory; `coldspot here <p>`,
+  `remember <ssid> <p>`, `forget <ssid>` edit it in coldspot's own terms. Keyed
+  by SSID so a network's several NM connection names collapse to one.
+- Deferred: hands-free auto-stabilize is now *expressed* as a per-network policy
+  (`stabilize`) rather than a global flag. Making the byte meter follow the
+  active link (not just the metered-flagged one) and multi-radio steering/
+  failover remain the frontier.
+
 ## 0.2.0 — "raichu"
 The cold-by-default governance + deep-analysis arc (v0.1.14–0.1.30), tagged.
 A metered link is now cold by default: total speed is capped to a smooth CAKE

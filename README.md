@@ -19,6 +19,9 @@ coldspot run -- rsync ...  # launch a job as *the* active task
 coldspot limit 1mbps       # hard system-wide egress cap; spend the trickle wisely
 coldspot uncap firefox     # warm a task: full speed even while everything's cold
 coldspot open              # panic release — lift all throttling/siege
+coldspot link              # per-interface link health: signal, rate, channel, loss
+coldspot aim wlan0         # live signal meter for positioning an antenna
+coldspot stabilize auto    # smooth a weak/lossy link (ack-filter + download AQM)
 coldspot top               # live per-app ↑/↓ view (what's burning data right now)
 coldspot history           # per-connection usage: Brick vs home, today + this month
 coldspot report month      # deep breakdown by connection + app (today|week|month)
@@ -38,6 +41,22 @@ coldspot stance open       # back to normal
 On a metered link coldspot enters `cold` automatically. Warm the task you're
 protecting — `coldspot uncap claude` / `coldspot run -- <cmd>` — and it rides the
 priority lane; `coldspot open` lifts everything.
+
+## Link health — the second axis
+A link betrays you two ways: it can be **scarce** (metered, capped) or **bad**
+(weak, lossy, fading). `cold` governs the first; **`stabilize`** handles the
+second. coldspot senses layer 1/2 — signal, PHY rate, channel, loss, fades — per
+wifi interface:
+
+| verb | what it does |
+|------|--------------|
+| `coldspot link` | per-interface board: signal + bar, band/channel, PHY rate, loss %, power-save, health score, and which link is active |
+| `coldspot aim [iface]` | live signal meter (dBm + rate, ~2×/s) for positioning an antenna — move it, watch `best` climb, tape it down |
+| `coldspot stabilize auto` | cap just under the link's *measured* ceiling, thin ACKs, shape the download (IFB + CAKE) so it stops collapsing into multi-second latency under load; power-save off. `auto` sizes the cap from the live PHY rate so it never cripples a healthy link |
+
+`coldspot report` also keeps a per-connection reliability history — average/min
+signal and how often each link *dropped* — so a snapshot ("this link is stronger")
+can be checked against the truth ("...but it fades 20× as often").
 
 ## How it works
 Two halves behind one `status.json` seam:
@@ -85,7 +104,9 @@ Per-app talkers in v0 need systemd IP accounting (the installer prints the
 one-liner). The v1 BPF core is built at install time — see `bpf/README.md`.
 
 ## Status
-**v0.2.0 "raichu"** — cold-by-default governance + deep analysis, end-to-end:
+**v0.3.0 — the link-aware axis** adds layer-1/2 sensing on top of v0.2.0: `coldspot
+link` / `aim` / `stabilize`, a per-connection signal + fade history, and an
+adaptive shaper that follows the RF. The v0.2.0 governance + analysis stack:
 
 - **Govern** — `cold` auto-engages on metered links: a smooth CAKE speed cap with
   warmed tasks + DNS prioritized inside it, a never-throttle floor for critical

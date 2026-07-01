@@ -28,6 +28,12 @@ DAY_DB = f"{STATE}/usage.json"
 HISTORY_DB = f"{STATE}/history.json"  # per-connection daily/monthly rollups
 LEDGER_DB = f"{STATE}/ledger.json"    # per-day per-app bytes (survives reloads)
 TS_DB = f"{STATE}/coldspot.db"        # hourly (connection, app) time-series
+POLICY_DB = f"{STATE}/policy.json"    # per-network policy — coldspot's own truth
+
+# What coldspot decides to do on a network. This is coldspot's authority: the NM
+# `metered` flag is demoted to just a seed for a NEW network, not the master.
+# scarce/economic -> cold; bad/quality -> stabilize; they're independent axes.
+POLICIES = ("open", "cold", "stabilize")
 BPF_USAGE = "/sys/fs/bpf/coldspot/usage"  # v1 core's per-cgroup map (if loaded)
 BPF_FLOWS = "/sys/fs/bpf/coldspot/flows"  # per-destination breakdown (if loaded)
 BPF_DNS = "/sys/fs/bpf/coldspot/dns"      # captured DNS responses (if loaded)
@@ -97,6 +103,134 @@ def read_iface(iface):
     except OSError:
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Link health (layer 1/2) — the second axis. The byte meter says how much data
+# moved; this says how GOOD the link is: signal, PHY rate, channel, loss. A link
+# can be "connected" and still be dying (weak/fading), and coldspot was blind to
+# that until now. All best-effort telemetry: the daemon must never die over it.
+# ---------------------------------------------------------------------------
+def _freq_to_channel(f):
+    """Wi-Fi centre frequency (MHz) -> channel number, across 2.4/5/6 GHz."""
+    if not f:
+        return None
+    if f == 2484:
+        return 14
+    if 2412 <= f <= 2472:
+        return (f - 2407) // 5
+    if 5000 <= f < 5900:
+        return (f - 5000) // 5          # 5180->36, 5745->149, 5805->161
+    if 5955 <= f <= 7115:
+        return (f - 5950) // 5           # 6 GHz
+    return None
+
+
+def _band(f):
+    if not f:
+        return None
+    return "6GHz" if f >= 5925 else "5GHz" if f >= 5000 else "2.4GHz"
+
+
+def _wifi_ifaces():
+    """Every wireless netdev (wl*, incl. USB wlx*)."""
+    return sorted(os.path.basename(d) for d in glob.glob("/sys/class/net/wl*"))
+
+
+def active_iface():
+    """The iface carrying the default route — the link actually reaching the
+    internet right now (which may not be the configured metered one)."""
+    try:
+        with open("/proc/net/route") as f:
+            for ln in f.readlines()[1:]:
+                p = ln.split()
+                if len(p) > 1 and p[1] == "00000000":
+                    return p[0]
+    except OSError:
+        pass
+    return None
+
+
+def read_link_health(iface):
+    """Layer-1/2 health for one wifi iface via `iw`. Returns a dict (with
+    connected=False when down) or None for non-wifi / iw unavailable. Parses
+    `iw dev link` (signal, PHY bitrate, freq, BSSID/SSID) + `station dump`
+    (tx retries/failed = the real 'is it flaky' signal)."""
+    if not iface or iface == "lo":
+        return None
+    try:
+        out = subprocess.run(["iw", "dev", iface, "link"],
+                             capture_output=True, text=True, timeout=2).stdout
+    except Exception:
+        return None
+    if "Connected to" not in out:
+        return {"connected": False}
+
+    def grab(text, pat, cast=str, d=None):
+        m = re.search(pat, text)
+        try:
+            return cast(m.group(1)) if m else d
+        except (ValueError, TypeError):
+            return d
+
+    h = {"connected": True,
+         "bssid": grab(out, r"Connected to ([0-9a-fA-F:]{17})"),
+         "ssid": grab(out, r"SSID:\s*(.+)"),
+         "signal_dbm": grab(out, r"signal:\s*(-?\d+)", int),
+         "freq_mhz": grab(out, r"freq:\s*(\d+)", int),
+         "tx_mbps": grab(out, r"tx bitrate:\s*([\d.]+)", float),
+         "rx_mbps": grab(out, r"rx bitrate:\s*([\d.]+)", float)}
+    h["channel"] = _freq_to_channel(h["freq_mhz"])
+    h["band"] = _band(h["freq_mhz"])
+    try:
+        sd = subprocess.run(["iw", "dev", iface, "station", "dump"],
+                            capture_output=True, text=True, timeout=2).stdout
+        h["tx_retries"] = grab(sd, r"tx retries:\s*(\d+)", int)
+        h["tx_failed"] = grab(sd, r"tx failed:\s*(\d+)", int)
+        h["tx_packets"] = grab(sd, r"tx packets:\s*(\d+)", int)
+    except Exception:
+        pass
+    try:
+        ps = subprocess.run(["iw", "dev", iface, "get", "power_save"],
+                            capture_output=True, text=True, timeout=2).stdout
+        h["power_save"] = "on" in ps.lower()
+    except Exception:
+        pass
+    return h
+
+
+def link_score(h):
+    """Coarse health verdict from signal + loss: good/ok/weak/bad/down. The
+    thresholds match lived reality — ~-75 is where handshakes get flaky, ~-82 is
+    the fading cliff."""
+    if not h or not h.get("connected"):
+        return "down"
+    s = h.get("signal_dbm")
+    if s is None:
+        return "unknown"
+    tp, tf = h.get("tx_packets") or 0, h.get("tx_failed") or 0
+    loss = (tf / tp) if tp else 0.0
+    if s >= -65 and loss < 0.02:
+        return "good"
+    if s >= -75 and loss < 0.05:
+        return "ok"
+    if s >= -82:
+        return "weak"
+    return "bad"
+
+
+def read_links(active):
+    """Health for every wifi iface, keyed by name; marks the active (default
+    route) one and attaches a score. Empty dict if iw isn't available."""
+    links = {}
+    for ifc in _wifi_ifaces():
+        h = read_link_health(ifc)
+        if h is None:
+            continue
+        h["active"] = (ifc == active)
+        h["score"] = link_score(h)
+        links[ifc] = h
+    return links
 
 
 def _le(arr):
@@ -516,6 +650,74 @@ def enforce(stance):
     return False
 
 
+# --- per-network policy: coldspot's own memory of what to do on each network ---
+def active_net(links, link_name=None):
+    """Identity we key policy on: the active link's SSID (so xfinitywifi,
+    xfinitywifi 1 and xf-usb collapse to one network). Returns None whenever we
+    can't read an SSID off an active wifi link — a flap gap, an `iw` hiccup, or a
+    wired-only host. The reconciler HOLDS on None; it never guesses from an NM
+    connection name (that's what polluted the store). coldspot is wifi-first, so
+    'no SSID' simply means 'don't touch policy this tick'."""
+    for h in (links or {}).values():
+        if h.get("active"):
+            return h.get("ssid")     # SSID, or None -> caller holds this tick
+    return None                      # nothing active -> hold, never guess a name
+
+
+def _active(links):
+    """(iface, health) of the active link, or (None, None)."""
+    for i, h in (links or {}).items():
+        if h.get("active"):
+            return i, h
+    return None, None
+
+
+def policy_decide(store, net, metered, score):
+    """Return (policy, seeded). If the network is known, honour its stored
+    policy. If it's new, SEED from the two axes — metered (economic) -> cold,
+    weak/bad signal (quality) -> stabilize, else open — remember the seed, and
+    flag seeded=True so the caller persists it. NM's flag is one input here, not
+    the master."""
+    if net in store:
+        return store[net].get("policy", "open"), False
+    if metered:
+        pol = "cold"
+    elif score in ("weak", "bad"):
+        pol = "stabilize"
+    else:
+        pol = "open"
+    store[net] = {"policy": pol, "source": "seeded", "ts": int(time.time())}
+    return pol, True
+
+
+def _stance_helper(*args):
+    """Run the privileged helper with arbitrary args (stabilize/unstabilize).
+    Returns True only if the helper actually exited 0 — so a caller's 'applied'
+    state reflects reality, not just 'the process ran'."""
+    for b in (os.path.join(HERE, "coldspot-stance"), "coldspot-stance"):
+        try:
+            return subprocess.run([b, *args], timeout=15).returncode == 0
+        except (FileNotFoundError, OSError):
+            continue
+    return False
+
+
+def daemon_stabilize(iface, health):
+    """Apply stabilize to a link, sizing the cap from its live PHY rate (half of
+    PHY ~ single-stream throughput) so a weak link is smoothed but a healthy one
+    isn't crippled. False if there's no rate to size from yet (retry later)."""
+    rxp, txp = (health or {}).get("rx_mbps"), (health or {}).get("tx_mbps")
+    if not rxp and not txp:
+        return False
+    dl = int((rxp or txp) * 1e6 * 0.5)
+    ul = int((txp or rxp) * 1e6 * 0.5)
+    return _stance_helper("stabilize", iface, str(ul), str(dl))
+
+
+def daemon_unstabilize(iface):
+    return _stance_helper("unstabilize", iface)
+
+
 _ip_accounting = None
 
 
@@ -721,6 +923,11 @@ def ts_open(path):
                    "hour TEXT, connection TEXT, metered INTEGER, app TEXT, "
                    "rx INTEGER, tx INTEGER, "
                    "PRIMARY KEY (hour, connection, app))")
+        db.execute("CREATE TABLE IF NOT EXISTS link_health ("
+                   "hour TEXT, iface TEXT, connection TEXT, "
+                   "samples INTEGER, sig_samples INTEGER, sig_sum INTEGER, "
+                   "sig_min INTEGER, sig_max INTEGER, fades INTEGER, "
+                   "PRIMARY KEY (hour, iface, connection))")
         db.commit()
         return db
     except Exception:
@@ -745,6 +952,51 @@ def ts_record(db, hour, connection, metered, deltas):
         pass
 
 
+def ts_record_link(db, hour, iface, connection, health):
+    """Fold one link-health sample into the hourly (iface, connection) row.
+    Signal stats (sum/min/max over sig_samples) only count samples that actually
+    carried a signal; `fades` counts genuine disconnects. So a link that sits at
+    a weak but steady -82 shows a low avg with zero fades, while one that keeps
+    dropping shows the fades — two different failure shapes, both legible."""
+    if db is None or not iface or not health:
+        return
+    sig = health.get("signal_dbm")
+    connected = bool(health.get("connected"))
+    has_sig = connected and isinstance(sig, int)
+    fade = 0 if connected else 1
+    conn = connection or "?"
+    try:
+        row = db.execute(
+            "SELECT samples, sig_samples, sig_sum, sig_min, sig_max, fades "
+            "FROM link_health WHERE hour=? AND iface=? AND connection=?",
+            (hour, iface, conn)).fetchone()
+        if row is None:
+            samples = sig_samples = sig_sum = fades = 0
+            sig_min = sig_max = None
+        else:
+            samples, sig_samples, sig_sum, sig_min, sig_max, fades = row
+        samples += 1
+        fades += fade
+        if has_sig:
+            sig_samples += 1
+            sig_sum += sig
+            sig_min = sig if sig_min is None else min(sig_min, sig)
+            sig_max = sig if sig_max is None else max(sig_max, sig)
+        db.execute(
+            "INSERT INTO link_health (hour, iface, connection, samples, "
+            "sig_samples, sig_sum, sig_min, sig_max, fades) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (hour, iface, connection) DO UPDATE SET "
+            "samples=excluded.samples, sig_samples=excluded.sig_samples, "
+            "sig_sum=excluded.sig_sum, sig_min=excluded.sig_min, "
+            "sig_max=excluded.sig_max, fades=excluded.fades",
+            (hour, iface, conn, samples, sig_samples, sig_sum,
+             sig_min, sig_max, fades))
+        db.commit()
+    except Exception:
+        pass
+
+
 def ts_prune(db, keep_days=120):
     """Drop rows older than keep_days (compared on the hour's date prefix)."""
     if db is None:
@@ -753,6 +1005,7 @@ def ts_prune(db, keep_days=120):
                            time.localtime(time.time() - keep_days * 86400))
     try:
         db.execute("DELETE FROM app_usage WHERE substr(hour, 1, 10) < ?", (cutoff,))
+        db.execute("DELETE FROM link_health WHERE substr(hour, 1, 10) < ?", (cutoff,))
         db.commit()
     except Exception:
         pass
@@ -954,6 +1207,12 @@ def main():
     anomalies = []
     attr_n = 0
     dns_names = {}
+    links = {}                  # layer-1/2 health per wifi iface (the 2nd axis)
+    policies = load_json(POLICY_DB, {})   # coldspot's memory of your networks
+    cur_net = "?"               # active network identity (SSID), for `here`
+    applied_pol = None          # policy the reconciler currently holds applied
+    applied_net = None          # network it was applied for
+    applied_sif = None          # iface stabilize is applied to (for teardown)
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -998,6 +1257,26 @@ def main():
                 else:
                     sess = {"rx": 0, "tx": 0, "since": int(time.time())}
                 escalated = False
+                conn.sendall(b'{"ok":true}\n')
+            elif cmd == "policy":
+                # set coldspot's remembered policy for a network (its own truth)
+                p = req.get("policy")
+                net = cur_net if req.get("here") else req.get("net")
+                if p in POLICIES and net and net != "?":
+                    policies[net] = {"policy": p, "source": "user",
+                                     "ts": int(time.time())}
+                    atomic_write(POLICY_DB, policies)
+                    manual_override = False   # hand it back to the reconciler
+                    applied_pol = None        # force re-apply next tick
+                    conn.sendall(b'{"ok":true}\n')
+                else:
+                    conn.sendall(b'{"ok":false,"err":"bad net/policy"}\n')
+            elif cmd == "forget":
+                net = req.get("net")
+                if net in policies:
+                    del policies[net]
+                    atomic_write(POLICY_DB, policies)
+                    applied_pol = None        # re-seed on the next tick
                 conn.sendall(b'{"ok":true}\n')
             else:
                 conn.sendall(b'{"ok":true}\n')
@@ -1048,17 +1327,52 @@ def main():
                 manual_override = False   # new connection -> auto-govern re-decides
             metered, link_name = new_metered, new_link
 
-            # auto-govern: cold by default on a metered link, released on an
-            # unmetered one. The safety floor (critical map + DNS/DHCP/NTP) keeps
-            # connectivity alive; `coldspot open` (a manual set) pauses this until
-            # the next roam. Reuses the metered signal above; ~10s to react.
-            if conf.get("auto_govern", True) and not manual_override:
-                if metered and not auto_governed and stance != "cold":
-                    if enforce("cold"):
-                        stance, auto_governed = "cold", True
-                elif not metered and auto_governed:
-                    if enforce("open"):
-                        stance, auto_governed = "open", False
+            # sense layer 1/2 FIRST — the reconciler below keys on the active
+            # link's SSID, so links must be fresh before it runs (else it'd fall
+            # back to a connection name and pollute the policy store).
+            links = read_links(active_iface())
+            act_if = next((i for i, v in links.items() if v.get("active")), None)
+            if act_if:
+                ts_record_link(ts, time.strftime("%Y-%m-%dT%H"), act_if,
+                               link_name, links[act_if])
+
+            # policy reconciler: coldspot applies ITS remembered policy for this
+            # network (not a live re-read of the metered flag). New networks get
+            # seeded from the two axes — metered->cold, weak signal->stabilize —
+            # and remembered. A manual stance (`coldspot cold/open`) pauses this
+            # until the next roam; `coldspot open` is always the panic release.
+            net = active_net(links, link_name)
+            if net:
+                cur_net = net       # keep last-known when a tick can't identify it
+            if conf.get("auto_govern", True) and not manual_override and net:
+                sif, shealth = _active(links)
+                pol, seeded = policy_decide(policies, net, metered,
+                                            (shealth or {}).get("score"))
+                if seeded:
+                    atomic_write(POLICY_DB, policies)
+                if (pol, net) != (applied_pol, applied_net):
+                    # tear down the previous policy's overlay before applying new
+                    if applied_pol == "stabilize" and applied_sif:
+                        daemon_unstabilize(applied_sif)
+                        applied_sif = None
+                    ok = True
+                    if pol == "cold":
+                        ok = enforce("cold")
+                        if ok:
+                            stance = "cold"
+                    elif pol == "open":
+                        ok = enforce("open")
+                        if ok:
+                            stance = "open"
+                    elif pol == "stabilize":
+                        enforce("open")          # clear any cold shaper first
+                        stance = "open"
+                        ok = bool(sif) and daemon_stabilize(sif, shealth)
+                        if ok:
+                            applied_sif = sif
+                    if ok:                        # commit; else retry next tick
+                        applied_pol, applied_net = pol, net
+                        auto_governed = (pol != "open")
             raw = read_proc_raw()
             if raw is not None:
                 tk = proc_talkers(raw)                     # per-process (best)
@@ -1114,6 +1428,8 @@ def main():
             "auto_siege": conf["auto_siege"], "rate_bps": rate,
             "auto_govern": conf.get("auto_govern", True), "governed": auto_governed,
             "cap_bits": conf.get("cold_cap_bits") if stance == "cold" else None,
+            "network": cur_net, "policy": applied_pol,
+            "stabilized": applied_sif is not None, "policies": policies,
             "flows": flows,
             "session": {"rx_mb": round(sess["rx"] / 1e6, 1),
                         "tx_mb": round(sess["tx"] / 1e6, 1),
@@ -1123,6 +1439,7 @@ def main():
             "budget": {"limit_mb": budget, "used_mb": round(used_mb, 1),
                        "pct": pct, "state": bstate, "eta": eta},
             "talkers": talkers,
+            "links": links,
             "history": history_summary(history, today),
             "ledger": ledger_top(ledger, today),
             "advice": advice,

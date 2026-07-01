@@ -5,17 +5,24 @@
 
   coldspot status [--json]              MB used, rate, stance, budget, top talkers
   coldspot top                          live per-app ↑/↓ view (refreshes; ctrl-c)
+  coldspot link                         per-interface link health (signal/rate/loss)
+  coldspot aim [iface]                  live signal meter for aiming an antenna
   coldspot flows [--json]               per-destination breakdown (needs bpf core)
   coldspot history [--json]             per-connection usage (today + this month)
   coldspot report [today|week|month]    deep breakdown by connection + app (sqlite)
   coldspot ledger [--json]              what ate today's data (survives reloads)
   coldspot advise [--json]              proactive nudges (e.g. P2P seeding)
-  coldspot stance <open|lean|siege|cold>  the stances; open = no-op
+  coldspot policy                       what coldspot does on each of your networks
+  coldspot here <open|cold|stabilize>   set the policy for the network you're on
+  coldspot remember <ssid> <policy>     set policy for a named network (persists)
+  coldspot forget <ssid>                drop a remembered policy (re-seeds on roam)
+  coldspot stance <open|lean|siege|cold>  one-shot override (until next roam)
   coldspot siege                        shortcut for `stance siege`
   coldspot cold                         throttle everything except warmed tasks
   coldspot open                         panic release — lift all throttling/siege
   coldspot budget <MB|off>              session data ceiling; meter counts toward it
   coldspot limit <rate|off>             hard egress speed cap (1mbps, 500kbps, 1MB/s)
+  coldspot stabilize auto|<down> [up]   smooth a weak/lossy link (ack-filter+ingress AQM)
   coldspot uncap <pid|name>             warm a task: full speed under cold/siege
   coldspot allow <pid|name>             alias of uncap (the by-pid primitive)
   coldspot run -- <cmd...>              launch a task warm (inside coldspot.slice)
@@ -196,6 +203,114 @@ def cmd_top(args):
         pass
 
 
+# ---- link health (the layer-1/2 axis) -------------------------------------
+_SCORE_COL = {"good": "92", "ok": "32", "weak": "33",
+              "bad": "91", "down": "90", "unknown": "90"}
+
+
+def _sigbar(dbm, width=12):
+    """A -92..-40 dBm bar."""
+    if dbm is None:
+        return "·" * width
+    n = max(0, min(width, round((dbm + 92) * width / 52)))
+    return "█" * n + "·" * (width - n)
+
+
+def _render_link(ifc, h):
+    score = h.get("score", "unknown")
+    col = _SCORE_COL.get(score, "0")
+    if not h.get("connected"):
+        print(f"  \033[90m○ {ifc:<17} disconnected\033[0m")
+        return
+    ssid = (h.get("ssid") or "?")[:16]
+    sig = h.get("signal_dbm")
+    band, ch = h.get("band") or "?", h.get("channel")
+    rx, tx = h.get("rx_mbps"), h.get("tx_mbps")
+    tp, tf = h.get("tx_packets") or 0, h.get("tx_failed") or 0
+    loss = f"{100 * tf / tp:.1f}%" if tp else "—"
+    ps = "  \033[33m⚡psave\033[0m" if h.get("power_save") else ""
+    active = "  \033[1m← active\033[0m" if h.get("active") else ""
+    sigtxt = f"{sig} dBm" if sig is not None else "? dBm"
+    print(f"  \033[{col}m● {ifc:<17}\033[0m {ssid:<16} "
+          f"\033[{col}m{score:<4} {sigtxt:>8} {_sigbar(sig)}\033[0m  "
+          f"{band}/ch{ch}  ↓{rx or '?'}/↑{tx or '?'}M  loss {loss}{ps}{active}")
+
+
+def cmd_link(args):
+    """Per-interface link health: signal, band/channel, PHY rate, loss, score.
+    The 'how good is the link' view — the sibling of `top` ('who's using it')."""
+    st = _status()
+    links = (st or {}).get("links") or {}
+    if not links:
+        sys.exit("no link data yet (is coldspotd running? the sensor needs `iw`)")
+    print("  \033[1mlink health\033[0m")
+    order = sorted(links.items(), key=lambda kv: (not kv[1].get("active"), kv[0]))
+    for ifc, h in order:
+        _render_link(ifc, h)
+
+
+def _sig_col(dbm):
+    if dbm is None:
+        return "90"
+    if dbm >= -65:
+        return "92"
+    if dbm >= -72:
+        return "32"
+    if dbm >= -80:
+        return "33"
+    if dbm >= -86:
+        return "91"
+    return "31"
+
+
+def cmd_aim(args):
+    """Live signal meter for antenna positioning. Reads the associated link's
+    dBm + PHY rate ~2×/sec — move the antenna, watch 'best' climb, tape it down.
+    (Aiming at an AP you're not associated to needs a root scan: ~/cs-aim.sh.)"""
+    import time
+    import re
+    import subprocess
+    iface = next((a for a in args if not a.startswith("-")), None)
+    if not iface:
+        links = (_status() or {}).get("links") or {}
+        iface = next((i for i, h in links.items() if h.get("active")), None) \
+            or _default_iface()
+    if not iface:
+        sys.exit("usage: coldspot aim <iface>")
+    best = None
+    try:
+        while True:
+            out = subprocess.run(["iw", "dev", iface, "link"],
+                                 capture_output=True, text=True).stdout
+            sys.stdout.write("\x1b[2J\x1b[H")
+            if "Connected to" not in out:
+                print(f"  \033[1maim\033[0m  {iface}: not associated.")
+                print("  aim at an AP you're not on yet:  sudo bash ~/cs-aim.sh")
+            else:
+                def g(p, c=str):
+                    mm = re.search(p, out)
+                    return c(mm.group(1)) if mm else None
+                sig = g(r"signal:\s*(-?\d+)", int)
+                ssid = g(r"SSID:\s*(.+)") or "?"
+                rx, tx = g(r"rx bitrate:\s*([\d.]+)"), g(r"tx bitrate:\s*([\d.]+)")
+                if sig is not None and (best is None or sig > best):
+                    best = sig
+                col = _sig_col(sig)
+                print(f"  \033[1maim\033[0m  {iface}  →  {ssid}\n")
+                st = f"{sig} dBm" if sig is not None else "? dBm"
+                print(f"  now   \033[{col}m{st:>8}  {_sigbar(sig)}\033[0m")
+                if best is not None:
+                    print(f"  best  \033[1m{best:>4} dBm\033[0m   "
+                          f"← beat it, then tape it down")
+                print(f"  rate  ↓{rx or '?'}/↑{tx or '?'} Mbit   "
+                      f"← climbs as the signal improves")
+            print("\n  Ctrl-C to stop")
+            sys.stdout.flush()
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+
+
 def _report_window(period):
     """(sql_condition, params, label) selecting an hour-range from app_usage."""
     import time
@@ -227,8 +342,23 @@ def cmd_report(args):
             f"GROUP BY app ORDER BY SUM(rx)+SUM(tx) DESC LIMIT 15", params).fetchall()
     except sqlite3.OperationalError:
         sys.exit("no time-series yet — needs the bpf core and a running daemon.")
+    by_link = []
+    try:   # link_health is newer; tolerate a DB that predates it
+        by_link = db.execute(
+            f"SELECT iface, connection, SUM(samples), SUM(sig_samples), "
+            f"SUM(sig_sum), MIN(sig_min), MAX(sig_max), SUM(fades) "
+            f"FROM link_health WHERE {cond} GROUP BY iface, connection "
+            f"ORDER BY SUM(samples) DESC", params).fetchall()
+    except sqlite3.OperationalError:
+        pass
     finally:
         db.close()
+
+    def _linkstat(r):
+        ifc, conn, samp, ssamp, ssum, smin, smax, fades = r
+        avg = round(ssum / ssamp) if ssamp else None
+        fpct = round(100 * (fades or 0) / samp, 1) if samp else 0.0
+        return ifc, conn, avg, smin, smax, fades, fpct
     if "--json" in args:
         print(json.dumps({"period": period,
                           "connections": [{"connection": c, "metered": bool(m),
@@ -237,7 +367,12 @@ def cmd_report(args):
                                           for c, rx, tx, m in by_conn],
                           "apps": [{"app": a, "rx_mb": round(rx / 1e6, 1),
                                     "tx_mb": round(tx / 1e6, 1)}
-                                   for a, rx, tx in by_app]}, indent=2))
+                                   for a, rx, tx in by_app],
+                          "links": [{"iface": i, "connection": c,
+                                     "avg_dbm": avg, "min_dbm": lo, "max_dbm": hi,
+                                     "fades": f, "fade_pct": fp}
+                                    for i, c, avg, lo, hi, f, fp
+                                    in map(_linkstat, by_link)]}, indent=2))
         return
     if not by_conn:
         print(f"report — {label}: no data yet.")
@@ -252,6 +387,13 @@ def cmd_report(args):
     for a, rx, tx in by_app:
         print(f"  {(rx + tx) / 1e6:>9.1f} MB  ↑{tx / 1e6:>8.1f} ↓{rx / 1e6:>8.1f}"
               f"  {a}")
+    if by_link:
+        print("link health (avg/min signal, fades = how often it dropped):")
+        for i, c, avg, lo, hi, f, fp in map(_linkstat, by_link):
+            av = f"{avg} dBm" if avg is not None else "  ?  "
+            rng = f"(min {lo})" if lo is not None else ""
+            print(f"  {av:>8} {rng:<10} fades {f or 0:>4} ({fp:>4.1f}%)  "
+                  f"{i}  {c}")
 
 
 def cmd_history(args):
@@ -364,6 +506,134 @@ def cmd_limit(args):
     sys.exit(rc)
 
 
+def _active_wifi():
+    """The wifi iface carrying the default route (from the link sensor)."""
+    links = (_status() or {}).get("links") or {}
+    return next((i for i, h in links.items() if h.get("active")), None)
+
+
+def _stabilize_auto(rest):
+    """`stabilize auto [iface]` — derive the cap from the link's live PHY rate
+    so we sit just under the *real* ceiling instead of crippling a good link.
+    Single-stream TCP throughput runs ~half of PHY, so cap at PHY×0.5."""
+    iface = (rest[0] if rest else None) or _active_wifi() \
+        or (_status() or {}).get("iface") or _default_iface()
+    if not iface:
+        sys.exit("can't determine the interface")
+    h = ((_status() or {}).get("links") or {}).get(iface, {})
+    rxp, txp = h.get("rx_mbps"), h.get("tx_mbps")
+    if not rxp and not txp:
+        sys.exit(f"no PHY rate for {iface} yet — pass explicit rates: "
+                 f"coldspot stabilize 2mbps 1mbps {iface}")
+    dl_c = int((rxp or txp) * 1e6 * 0.5)
+    ul_c = int((txp or rxp) * 1e6 * 0.5)
+    rc = _helper("stabilize", iface, str(ul_c), str(dl_c))
+    if rc == 0:
+        print(f"stabilize auto -> {iface}: down≤{dl_c // 1000} up≤{ul_c // 1000} "
+              f"kbit/s  (from {rxp or '?'}/{txp or '?'} Mbit PHY; "
+              f"ack-filter + ingress AQM, power-save off)")
+    sys.exit(rc)
+
+
+def cmd_stabilize(args):
+    """Weak/lossy-link tuning: cap just under the real ceiling, thin ACKs, and
+    shape the download (IFB) so a bad link stops collapsing into multi-second
+    latency under load. `stabilize off` clears it. Unlike `cold`, this protects
+    latency on a *bad* link, not a data budget.
+
+        coldspot stabilize auto [iface]          cap from the link's live PHY rate
+        coldspot stabilize <down> [up] [iface]   e.g. 2mbps 800kbps
+        coldspot stabilize off [iface]"""
+    if args and args[0] == "auto":
+        return _stabilize_auto(args[1:])
+    off = bool(args) and args[0] in ("off", "0", "none")
+    rest = args[1:] if off else list(args)
+    dl = ul = None
+    if not off:
+        if not rest:
+            sys.exit("usage: coldspot stabilize <down> [up] [iface]  e.g. 2mbps 800kbps\n"
+                     "       coldspot stabilize off [iface]")
+        dl = _parse_rate(rest[0])
+        rest = rest[1:]
+        if rest and _parse_rate(rest[0]):
+            ul = _parse_rate(rest[0])
+            rest = rest[1:]
+        ul = ul or dl
+    iface = (rest[0] if rest else None) or _active_wifi() \
+        or (_status() or {}).get("iface") or _default_iface()
+    if not iface:
+        sys.exit("can't determine the interface (pass it: coldspot stabilize 2mbps <iface>)")
+    if off:
+        rc = _helper("unstabilize", iface)
+        if rc == 0:
+            print(f"stabilize off — {iface} back to normal")
+        sys.exit(rc)
+    if not dl or dl <= 0:
+        sys.exit("bad rate; try: coldspot stabilize 2mbps 800kbps [iface]")
+    # cap ~15% under the measured ceiling so the queue lives in our shaper (where
+    # ack-filter + AQM run), not the driver's dumb FIFO where bufferbloat forms.
+    ul_c, dl_c = int(ul * 0.85), int(dl * 0.85)
+    rc = _helper("stabilize", iface, str(ul_c), str(dl_c))
+    if rc == 0:
+        print(f"stabilize -> {iface}: down≤{dl_c // 1000} up≤{ul_c // 1000} kbit/s "
+              f"(ack-filter + ingress AQM + warmed-task priority, power-save off)")
+    sys.exit(rc)
+
+
+def _policy_cmd(obj):
+    try:
+        r = _sock(obj)
+    except OSError as e:
+        sys.exit(f"cannot reach coldspotd ({e}); is the service running?")
+    if not r.get("ok"):
+        sys.exit(r.get("err", "command failed"))
+    return r
+
+
+def cmd_here(args):
+    """Set coldspot's remembered policy for the network you're on right now."""
+    if not args or args[0] not in ("open", "cold", "stabilize"):
+        sys.exit("usage: coldspot here <open|cold|stabilize>")
+    _policy_cmd({"cmd": "policy", "here": True, "policy": args[0]})
+    net = (_status() or {}).get("network", "this network")
+    print(f"remembered: {net} → {args[0]}")
+
+
+def cmd_remember(args):
+    """Set policy for a named network (SSID): coldspot remember <ssid> <policy>."""
+    if len(args) < 2 or args[-1] not in ("open", "cold", "stabilize"):
+        sys.exit("usage: coldspot remember <ssid> <open|cold|stabilize>")
+    net, pol = " ".join(args[:-1]), args[-1]
+    _policy_cmd({"cmd": "policy", "net": net, "policy": pol})
+    print(f"remembered: {net} → {pol}")
+
+
+def cmd_forget(args):
+    if not args:
+        sys.exit("usage: coldspot forget <ssid>")
+    net = " ".join(args)
+    _policy_cmd({"cmd": "forget", "net": net})
+    print(f"forgot: {net}  (will re-seed next time you're on it)")
+
+
+def cmd_policy(args):
+    """Show coldspot's memory of your networks — what it does on each."""
+    st = _status() or {}
+    pols = st.get("policies") or {}
+    cur = st.get("network")
+    if "--json" in args:
+        print(json.dumps(pols, indent=2))
+        return
+    if not pols:
+        print("no network policies yet — coldspot learns them as you roam.")
+        return
+    print(f"  {'network':<22} {'policy':<11} source")
+    for net, rec in sorted(pols.items()):
+        here = " \033[1m← here\033[0m" if net == cur else ""
+        print(f"  {net:<22} {rec.get('policy', ''):<11} "
+              f"{rec.get('source', '')}{here}")
+
+
 def cmd_budget(args):
     if not args:
         sys.exit("usage: coldspot budget <MB|off>")
@@ -466,11 +736,13 @@ def main():
     verb, rest = argv[0], argv[1:]
     table = {
         "status": cmd_status, "flows": cmd_flows, "stance": cmd_stance,
-        "top": cmd_top,
+        "top": cmd_top, "link": cmd_link, "aim": cmd_aim,
         "history": cmd_history, "ledger": cmd_ledger, "advise": cmd_advise,
         "report": cmd_report,
         "budget": cmd_budget, "allow": cmd_allow, "uncap": cmd_uncap,
-        "limit": cmd_limit, "run": cmd_run,
+        "limit": cmd_limit, "stabilize": cmd_stabilize, "run": cmd_run,
+        "policy": cmd_policy, "here": cmd_here, "remember": cmd_remember,
+        "forget": cmd_forget,
         "reset": cmd_reset, "version": cmd_version,
         "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),
         "siege": lambda a: cmd_stance(["siege"]),

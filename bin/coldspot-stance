@@ -172,6 +172,57 @@ shaper_clear() {
   tc qdisc del dev "$1" root 2>/dev/null || true
 }
 
+# ---- stabilize: weak/lossy-link tuning (the layer-1/2 response) -------------
+# cold protects a DATA BUDGET (a hard low cap). stabilize protects LATENCY on a
+# BAD link: cap just under the real ceiling, thin ACKs (a weak uplink chokes on
+# them and starves the downlink), tell CAKE the honest RTT, and — the big win —
+# shape the DOWNLOAD via an IFB mirror so inbound bufferbloat can't build. The
+# shared nft_qos still gives warmed tasks + DNS the priority tin. Power-save off
+# because it makes a weak link miss beacons and drop.
+IFB="ifb-cs"
+
+stabilize_egress() {   # $1 iface  $2 ul_bits
+  local iface="$1" ul="$2"
+  if tc qdisc replace dev "$iface" root cake bandwidth "${ul}bit" diffserv3 \
+       ack-filter rtt 100ms 2>/dev/null; then
+    nft_qos 2>/dev/null || true
+    return 0
+  fi
+  tc qdisc replace dev "$iface" root fq_codel 2>/dev/null || return 1
+}
+
+shaper_ingress_setup() {   # $1 iface  $2 dl_bits — download-side AQM via IFB
+  local iface="$1" dl="$2"
+  modprobe ifb numifbs=0 2>/dev/null || modprobe ifb 2>/dev/null || true
+  ip link show "$IFB" >/dev/null 2>&1 || ip link add "$IFB" type ifb || return 1
+  ip link set "$IFB" up
+  tc qdisc replace dev "$iface" handle ffff: ingress 2>/dev/null || return 1
+  tc filter replace dev "$iface" parent ffff: protocol all matchall \
+       action mirred egress redirect dev "$IFB" 2>/dev/null \
+    || tc filter replace dev "$iface" parent ffff: protocol all u32 \
+         match u32 0 0 action mirred egress redirect dev "$IFB" || return 1
+  tc qdisc replace dev "$IFB" root cake bandwidth "${dl}bit" besteffort ingress \
+    2>/dev/null || tc qdisc replace dev "$IFB" root fq_codel
+}
+
+shaper_ingress_clear() {   # $1 iface
+  tc qdisc del dev "$1" handle ffff: ingress 2>/dev/null || true
+  tc qdisc del dev "$IFB" root 2>/dev/null || true
+  ip link del "$IFB" 2>/dev/null || true
+}
+
+stabilize_setup() {   # $1 iface  $2 ul_bits  $3 dl_bits
+  local iface="$1" ul="$2" dl="$3"
+  iw dev "$iface" set power_save off 2>/dev/null || true
+  stabilize_egress "$iface" "$ul"
+  shaper_ingress_setup "$iface" "$dl" || true
+}
+
+stabilize_clear() {   # $1 iface
+  shaper_clear "$1"             # egress cake + nft_qos
+  shaper_ingress_clear "$1"
+}
+
 pause_hogs() { for u in "${HOGS[@]}"; do systemctl stop "$u" 2>/dev/null || true; done; }
 
 case "${1:-}" in
@@ -225,6 +276,20 @@ case "${1:-}" in
     iface="${2:?usage: coldspot-stance unlimit <iface>}"
     shaper_clear "$iface"
     echo "limit cleared on ${iface}"
+    ;;
+  stabilize)
+    require_root
+    iface="${2:?usage: coldspot-stance stabilize <iface> <ul_bits> [dl_bits]}"
+    ul="${3:?usage: coldspot-stance stabilize <iface> <ul_bits> [dl_bits]}"
+    dl="${4:-$ul}"
+    stabilize_setup "$iface" "$ul" "$dl"
+    echo "stabilize: ${iface} ul<=${ul} dl<=${dl} bit/s (ack-filter + ingress AQM + priority)"
+    ;;
+  unstabilize)
+    require_root
+    iface="${2:?usage: coldspot-stance unstabilize <iface>}"
+    stabilize_clear "$iface"
+    echo "stabilize cleared on ${iface}"
     ;;
   allow)
     require_root; ensure_cgroup
