@@ -22,6 +22,8 @@ coldspot open              # panic release — lift all throttling/siege
 coldspot link              # per-interface link health: signal, rate, channel, loss
 coldspot aim wlan0         # live signal meter for positioning an antenna
 coldspot stabilize auto    # smooth a weak/lossy link (ack-filter + download AQM)
+coldspot here stabilize    # remember: on THIS network, stabilize (persists)
+coldspot policy            # what coldspot does on each of your networks
 coldspot top               # live per-app ↑/↓ view (what's burning data right now)
 coldspot history           # per-connection usage: Brick vs home, today + this month
 coldspot report month      # deep breakdown by connection + app (today|week|month)
@@ -57,6 +59,25 @@ wifi interface:
 `coldspot report` also keeps a per-connection reliability history — average/min
 signal and how often each link *dropped* — so a snapshot ("this link is stronger")
 can be checked against the truth ("...but it fades 20× as often").
+
+## Network memory — coldspot owns the policy
+"Metered" is the wrong word for a link that's *free but fragile* (weak public
+wifi) — that's a **quality** problem (`stabilize`), not an **economic** one
+(`cold`). So coldspot stops *reacting* to NetworkManager's metered flag and keeps
+its **own persistent, per-network policy**, keyed by SSID:
+
+```
+coldspot policy                  # Brick → cold, xfinitywifi → stabilize, home → open
+coldspot here stabilize          # set the policy for the network you're on
+coldspot remember Brick cold     # set it for a named network
+coldspot forget xfinitywifi      # drop it (re-seeds next time you're on it)
+```
+
+On roam, coldspot applies *its* remembered policy for the network. A network it
+hasn't seen is **seeded** from the two independent axes — NM-metered → `cold`,
+weak signal → `stabilize`, else `open` — then remembered, so the flag is one
+*seed*, never the master. The daemon owns the truth, including the policy; the
+CLI and pill just read it.
 
 ## How it works
 Two halves behind one `status.json` seam:
