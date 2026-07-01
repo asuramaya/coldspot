@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 — multi-radio
+Two or more radios become one smart link. coldspot senses each radio's health,
+keeps the primary on the best one, fails over automatically when it dies, and —
+when the radios have genuinely independent backhauls — aggregates them into one
+pipe. Built and validated on a real two-xfinity setup.
+- **Rank + steer** — coldspot ranks connected radios by health (score → loss →
+  signal); `coldspot steer <iface|auto>` makes the healthiest the primary route
+  (nmcli route-metric + reapply, no association drop), the rest become backups.
+- **Auto-steer** (ON by default) — a standing loop keeps the primary on the
+  healthiest radio hands-free: instant failover if it drops, plus a clear-margin
+  (>=6 dB or a better health class) + hysteresis rule so two near-equal radios
+  never ping-pong.
+- **Bond — health-gated ECMP aggregation** — `coldspot bond [auto|off|<ifaces>]`
+  aggregates independent uplinks into one weighted ECMP pipe so parallel
+  workloads get the combined bandwidth. Independence is *proven* by distinct
+  public egress IPs (two radios on one AP NAT to the same IP and are correctly
+  left out); the health gate excludes weak/dead radios so a starved link can
+  never black-hole the flows that hash to it. Opt-in daemon `auto_bond`
+  (default off) — safe by construction, a no-op until 2 healthy independent
+  links exist.
+- Deferred: per-app flow-splitting (`fwmark → output-interface`) and true
+  single-flow bonding (needs MPTCP or a bonding proxy).
+
 ## 0.3.0 — the link-aware axis
 coldspot gains a second sense. Until now it knew *how much* data moved and *who*
 spent it; now it also knows *how good the link is* — signal, PHY rate, channel,

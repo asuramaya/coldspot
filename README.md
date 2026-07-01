@@ -127,9 +127,12 @@ Per-app talkers in v0 need systemd IP accounting (the installer prints the
 one-liner). The v1 BPF core is built at install time — see `bpf/README.md`.
 
 ## Status
-**v0.3.0 — the link-aware axis** adds layer-1/2 sensing on top of v0.2.0: `coldspot
-link` / `aim` / `stabilize`, a per-connection signal + fade history, and an
-adaptive shaper that follows the RF. The v0.2.0 governance + analysis stack:
+**v0.4.0 — multi-radio** turns two or more radios into one smart link: health
+ranking, hands-free failover (`steer`/auto-steer), and health-gated aggregation
+of independent uplinks (`coldspot bond`). **v0.3.0 — the link-aware axis** added
+layer-1/2 sensing and the network-policy pivot: `coldspot link`/`aim`/`stabilize`,
+a per-connection signal + fade history, an adaptive shaper that follows the RF,
+and a per-network policy store. The v0.2.0 governance + analysis stack:
 
 - **Govern** — `cold` auto-engages on metered links: a smooth CAKE speed cap with
   warmed tasks + DNS prioritized inside it, a never-throttle floor for critical
