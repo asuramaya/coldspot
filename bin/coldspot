@@ -6,6 +6,7 @@
   coldspot status [--json]              MB used, rate, stance, budget, top talkers
   coldspot top                          live per-app ↑/↓ view (refreshes; ctrl-c)
   coldspot link                         per-interface link health (signal/rate/loss)
+  coldspot steer <iface|auto>           make the healthiest radio the primary route
   coldspot aim [iface]                  live signal meter for aiming an antenna
   coldspot flows [--json]               per-destination breakdown (needs bpf core)
   coldspot history [--json]             per-connection usage (today + this month)
@@ -247,6 +248,10 @@ def cmd_link(args):
     order = sorted(links.items(), key=lambda kv: (not kv[1].get("active"), kv[0]))
     for ifc, h in order:
         _render_link(ifc, h)
+    primary, best = st.get("primary"), st.get("best_link")
+    if best and primary and best != primary:
+        print(f"  \033[33m→ {best} looks healthier than the active {primary}; "
+              f"`coldspot steer {best}` to switch\033[0m")
 
 
 def _sig_col(dbm):
@@ -634,6 +639,25 @@ def cmd_policy(args):
               f"{rec.get('source', '')}{here}")
 
 
+def cmd_steer(args):
+    """Make a link the primary route. `steer auto` picks the healthiest link
+    (coldspot's ranking); `steer <iface>` forces one. The others become
+    higher-metric backups, so if the primary drops, traffic fails over."""
+    if not args:
+        sys.exit("usage: coldspot steer <iface|auto>")
+    st = _status() or {}
+    if args[0] == "auto":
+        iface = st.get("best_link")
+        if not iface:
+            sys.exit("no healthy link to steer to (is coldspotd running?)")
+    else:
+        iface = args[0]
+    rc = _helper("steer", iface)
+    if rc == 0:
+        print(f"steer → {iface} is now primary; others demoted to backups")
+    sys.exit(rc)
+
+
 def cmd_budget(args):
     if not args:
         sys.exit("usage: coldspot budget <MB|off>")
@@ -742,7 +766,7 @@ def main():
         "budget": cmd_budget, "allow": cmd_allow, "uncap": cmd_uncap,
         "limit": cmd_limit, "stabilize": cmd_stabilize, "run": cmd_run,
         "policy": cmd_policy, "here": cmd_here, "remember": cmd_remember,
-        "forget": cmd_forget,
+        "forget": cmd_forget, "steer": cmd_steer,
         "reset": cmd_reset, "version": cmd_version,
         "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),
         "siege": lambda a: cmd_stance(["siege"]),

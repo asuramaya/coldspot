@@ -295,6 +295,24 @@ case "${1:-}" in
     stabilize_clear "$iface"
     echo "stabilize cleared on ${iface}"
     ;;
+  steer)
+    # Make one wifi link the primary default route: it gets the lowest metric,
+    # the others become higher-metric backups (automatic failover). nmcli reapply
+    # applies the new metric without dropping the association.
+    require_root
+    target="${2:?usage: coldspot-stance steer <iface>}"
+    n=100
+    for dev in /sys/class/net/wl*; do
+      dev="$(basename "$dev")"
+      conn="$(nmcli -t -f GENERAL.CONNECTION device show "$dev" 2>/dev/null \
+              | sed -n 's/^GENERAL.CONNECTION://p')"
+      [[ -z "$conn" || "$conn" == "--" ]] && continue
+      if [[ "$dev" == "$target" ]]; then m=50; else m=$n; n=$((n + 10)); fi
+      nmcli connection modify "$conn" ipv4.route-metric "$m" 2>/dev/null || true
+      nmcli device reapply "$dev" 2>/dev/null || true
+    done
+    echo "steer: ${target} is primary (backups demoted)"
+    ;;
   allow)
     require_root; ensure_cgroup
     pid="${2:?usage: coldspot-stance allow <pid>}"

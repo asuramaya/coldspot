@@ -233,6 +233,25 @@ def read_links(active):
     return links
 
 
+_SCORE_RANK = {"good": 0, "ok": 1, "weak": 2, "bad": 3, "down": 4, "unknown": 5}
+
+
+def rank_links(links):
+    """Connected links, best-first for primary selection: health score, then
+    lower loss, then stronger signal. This is the L4 foundation — which radio
+    *should* carry traffic — used by failover and per-app steering alike."""
+    def key(item):
+        _ifc, h = item
+        tp, tf = h.get("tx_packets") or 0, h.get("tx_failed") or 0
+        loss = (tf / tp) if tp else 0.0
+        sig = -(h.get("signal_dbm") if h.get("signal_dbm") is not None else -999)
+        return (_SCORE_RANK.get(h.get("score"), 5), round(loss, 3), sig)
+
+    connected = [(i, h) for i, h in (links or {}).items() if h.get("connected")]
+    connected.sort(key=key)
+    return [i for i, _ in connected]
+
+
 def _le(arr):
     """little-endian byte list (bpftool -j) -> int."""
     v = 0
@@ -1442,6 +1461,8 @@ def main():
             "cap_bits": conf.get("cold_cap_bits") if stance == "cold" else None,
             "network": cur_net, "policy": applied_pol,
             "stabilized": applied_sif is not None, "policies": policies,
+            "primary": next((i for i, h in links.items() if h.get("active")), None),
+            "best_link": (rank_links(links) or [None])[0],
             "flows": flows,
             "session": {"rx_mb": round(sess["rx"] / 1e6, 1),
                         "tx_mb": round(sess["tx"] / 1e6, 1),

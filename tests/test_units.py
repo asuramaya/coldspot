@@ -515,6 +515,24 @@ def test_policy_decide():
     assert d.active_net({"wlx": {"active": True, "ssid": None}}) is None
 
 
+def test_rank_links():
+    links = {
+        "wlp": {"connected": True, "score": "weak", "signal_dbm": -80,
+                "tx_packets": 100, "tx_failed": 30},
+        "wlx": {"connected": True, "score": "ok", "signal_dbm": -70,
+                "tx_packets": 100, "tx_failed": 1},
+        "wld": {"connected": False, "score": "down"},
+    }
+    assert d.rank_links(links) == ["wlx", "wlp"]     # ok > weak; down excluded
+    # tie on score -> lower loss wins even over a stronger signal
+    tie = {"a": {"connected": True, "score": "ok", "signal_dbm": -70,
+                 "tx_packets": 100, "tx_failed": 20},
+           "b": {"connected": True, "score": "ok", "signal_dbm": -75,
+                 "tx_packets": 100, "tx_failed": 1}}
+    assert d.rank_links(tie) == ["b", "a"]
+    assert d.rank_links({}) == []
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):
