@@ -59,9 +59,13 @@ bpf_set_siege_target() {
 # siege, point it at the survivor subtree.
 bpf_apply() {
   "$BPF_HELPER" stance "$1"
-  # leaving cold tears down the CAKE cap + QoS marking
+  local oifc; oifc="$(default_iface)"
+  # entering ANY stance lifts a prior stabilize overlay's ingress IFB (else it
+  # survives `coldspot open`/`cold`); open/lean/siege additionally drop the
+  # egress CAKE cap + QoS marking (cold replaces that with its own).
+  [[ -n "$oifc" ]] && shaper_ingress_clear "$oifc"
   if [[ "$1" != "3" ]]; then
-    local oifc; oifc="$(default_iface)"; [[ -n "$oifc" ]] && shaper_clear "$oifc"
+    [[ -n "$oifc" ]] && shaper_clear "$oifc"
   fi
   # siege (2) and cold (3) both honour the warmed-task subtree.
   if [[ "$1" == "2" || "$1" == "3" ]]; then bpf_set_siege_target; fi

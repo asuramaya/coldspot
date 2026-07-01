@@ -1243,9 +1243,12 @@ def main():
                 if req.get("stance") in STANCES:
                     stance = req["stance"]
                     escalated = False  # a manual stance clears the auto latch
-                    # user took the wheel: pause auto-govern until the next roam
+                    # user took the wheel: pause auto-govern until the next roam,
+                    # and forget what the reconciler had applied (a manual stance
+                    # supersedes it) so policy re-establishes fresh on the roam.
                     manual_override = True
                     auto_governed = False
+                    applied_pol, applied_sif = None, None
                 if "budget" in req:
                     budget = req["budget"]  # MB or None
                     escalated = False
@@ -1315,17 +1318,23 @@ def main():
         # 4) per-app attribution: prefer the BPF core, else systemd (every ~5th)
         talk_tick = (talk_tick + 1) % 5
         if talk_tick == 1:
-            new_metered, new_link = _link_state(iface)  # Brick <-> home roam?
-            if (new_metered, new_link) != (metered, link_name):
-                # roamed: the BPF attribution maps still hold the previous
-                # connection's bytes (kernel gates by ifindex, can't see SSID) —
-                # clear them so talkers/flows track only the new connection, and
-                # re-prime the ledger baseline (the cleared map jumps to ~0).
+            # follow the link actually carrying traffic (the default route), not a
+            # fixed 'metered device' pinned at startup. On a multi-homed host the
+            # two diverge, and byte accounting / the BPF pin must track the wire in
+            # use — else we meter an idle radio while traffic sails by uncounted.
+            new_iface = active_iface() or iface
+            new_metered, new_link = _link_state(new_iface)  # roam OR active switch
+            if new_iface != iface or (new_metered, new_link) != (metered, link_name):
+                # the BPF attribution maps still hold the previous link's bytes
+                # (kernel gates by ifindex) — clear them so talkers/flows track
+                # only the new link, re-prime the ledger, and reset the byte
+                # baseline so the next delta isn't across two different ifaces.
                 bpf_reset_usage()
                 talkers, flows = [], []
                 prev_proc, proc_primed = {}, False
-                manual_override = False   # new connection -> auto-govern re-decides
-            metered, link_name = new_metered, new_link
+                manual_override = False   # new link -> the reconciler re-decides
+                last = None               # re-prime rate/session baseline on switch
+            iface, metered, link_name = new_iface, new_metered, new_link
 
             # sense layer 1/2 FIRST — the reconciler below keys on the active
             # link's SSID, so links must be fresh before it runs (else it'd fall
@@ -1350,7 +1359,10 @@ def main():
                                             (shealth or {}).get("score"))
                 if seeded:
                     atomic_write(POLICY_DB, policies)
-                if (pol, net) != (applied_pol, applied_net):
+                # re-apply on a policy/network change, OR when stabilize's active
+                # iface moved under it (failover between radios on the same SSID)
+                moved = (pol == "stabilize" and sif and sif != applied_sif)
+                if (pol, net) != (applied_pol, applied_net) or moved:
                     # tear down the previous policy's overlay before applying new
                     if applied_pol == "stabilize" and applied_sif:
                         daemon_unstabilize(applied_sif)
