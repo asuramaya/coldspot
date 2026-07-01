@@ -7,6 +7,7 @@
   coldspot top                          live per-app ↑/↓ view (refreshes; ctrl-c)
   coldspot link                         per-interface link health (signal/rate/loss)
   coldspot steer <iface|auto>           make the healthiest radio the primary route
+  coldspot bond [auto|off|<ifaces>]     aggregate independent uplinks into one pipe
   coldspot aim [iface]                  live signal meter for aiming an antenna
   coldspot flows [--json]               per-destination breakdown (needs bpf core)
   coldspot history [--json]             per-connection usage (today + this month)
@@ -658,6 +659,40 @@ def cmd_steer(args):
     sys.exit(rc)
 
 
+def cmd_bond(args):
+    """Aggregate independent uplinks into one pipe (weighted ECMP). `bond auto`
+    bonds whatever is currently healthy + independent; `bond <if> <if>...` forces
+    a set; `bond off` restores single-link routing; no arg shows the state.
+    Only bonds links with distinct public egress (real separate backhauls) — two
+    radios on one AP, or a weak radio, are correctly left out."""
+    st = _status() or {}
+    if not args:
+        bonded = st.get("bonded") or []
+        able = st.get("bondable") or []
+        print(f"  bonded now : {', '.join(bonded) if bonded else '(none)'}")
+        print(f"  bondable   : {', '.join(f'{i} w{w}' for i, w in able) or '(need 2+ healthy, independent links)'}")
+        for i, h in (st.get("links") or {}).items():
+            if h.get("connected"):
+                print(f"    {i}: {h.get('score')}  egress {h.get('egress_ip') or '?'}")
+        return
+    if args[0] == "off":
+        sys.exit(_helper("unbond"))
+    if args[0] == "auto":
+        able = st.get("bondable") or []
+        if len(able) < 2:
+            sys.exit("nothing to bond — need 2+ healthy links with distinct egress "
+                     "(check `coldspot bond`)")
+        specs = [f"{i}:{w}" for i, w in able]
+    else:
+        specs = [a if ":" in a else f"{a}:1" for a in args]
+        if len(specs) < 2:
+            sys.exit("usage: coldspot bond <iface> <iface> [...] | auto | off")
+    rc = _helper("bond", *specs)
+    if rc == 0:
+        print(f"bond → aggregated {', '.join(specs)}")
+    sys.exit(rc)
+
+
 def cmd_budget(args):
     if not args:
         sys.exit("usage: coldspot budget <MB|off>")
@@ -766,7 +801,7 @@ def main():
         "budget": cmd_budget, "allow": cmd_allow, "uncap": cmd_uncap,
         "limit": cmd_limit, "stabilize": cmd_stabilize, "run": cmd_run,
         "policy": cmd_policy, "here": cmd_here, "remember": cmd_remember,
-        "forget": cmd_forget, "steer": cmd_steer,
+        "forget": cmd_forget, "steer": cmd_steer, "bond": cmd_bond,
         "reset": cmd_reset, "version": cmd_version,
         "update": cmd_update, "check-update": lambda a: cmd_update(["--check", *a]),
         "siege": lambda a: cmd_stance(["siege"]),

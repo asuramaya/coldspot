@@ -24,6 +24,7 @@ coldspot aim wlan0         # live signal meter for positioning an antenna
 coldspot stabilize auto    # smooth a weak/lossy link (ack-filter + download AQM)
 coldspot here stabilize    # remember: on THIS network, stabilize (persists)
 coldspot steer auto        # make the healthiest radio primary (automatic by default)
+coldspot bond              # aggregate independent uplinks into one pipe (ECMP)
 coldspot policy            # what coldspot does on each of your networks
 coldspot top               # live per-app ↑/↓ view (what's burning data right now)
 coldspot history           # per-connection usage: Brick vs home, today + this month

@@ -549,6 +549,25 @@ def test_steer_better():
                           {**same, "signal_dbm": -70}) is False   # only 3 dB
 
 
+def test_bond_plan():
+    # two healthy links with DISTINCT egress -> bond both, weighted by score
+    two = {"A": {"connected": True, "score": "good", "egress_ip": "1.2.3.4"},
+           "B": {"connected": True, "score": "ok", "egress_ip": "5.6.7.8"}}
+    assert d.bond_plan(two) == [("A", 4), ("B", 2)]
+    # same egress = one backhaul -> collapse to the best, don't bond a phantom
+    same = {"A": {"connected": True, "score": "good", "egress_ip": "1.2.3.4"},
+            "B": {"connected": True, "score": "ok", "egress_ip": "1.2.3.4"}}
+    assert d.bond_plan(same) == [("A", 4)]
+    # the safety gate: a weak radio never enters the bond
+    weak = {"A": {"connected": True, "score": "good", "egress_ip": "1.2.3.4"},
+            "B": {"connected": True, "score": "weak", "egress_ip": "5.6.7.8"}}
+    assert d.bond_plan(weak) == [("A", 4)]
+    # independence unproven (no egress IP yet) -> excluded, not guessed
+    unk = {"A": {"connected": True, "score": "good", "egress_ip": "1.2.3.4"},
+           "B": {"connected": True, "score": "good", "egress_ip": None}}
+    assert d.bond_plan(unk) == [("A", 4)]
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

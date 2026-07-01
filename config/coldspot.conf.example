@@ -28,6 +28,15 @@ auto_siege = off
 # radio manually any time with `coldspot steer <iface>`. ON by default.
 # auto_steer = on
 
+# Auto-bond: aggregate 2+ links into one weighted ECMP pipe when they have
+# genuinely independent backhauls (distinct public egress IPs) AND both are
+# healthy. New connections hash across them, so parallel workloads (browsers,
+# agent swarms) get the combined bandwidth. A weak/high-loss radio is never
+# bonded (it would black-hole the flows that land on it). OFF by default —
+# situational and it manages the default route; turn on once you've confirmed
+# two healthy independent uplinks (`coldspot bond` shows the state).
+# auto_bond = off
+
 # Units the `lean` stance pauses (space-separated). Uncomment to override the
 # default (packagekit snapd fwupd-refresh unattended-upgrades).
 # lean_hogs = packagekit snapd fwupd-refresh unattended-upgrades

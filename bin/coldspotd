@@ -276,6 +276,46 @@ def steer_better(cand, cur):
     return False
 
 
+def link_egress_ip(iface, timeout=6):
+    """The PUBLIC IP this iface egresses from (bound request). Distinct egress
+    IPs across links = independent backhauls = aggregation is real (not just two
+    radios onto one AP, which NAT to the same public IP). None on failure."""
+    try:
+        out = subprocess.run(
+            ["curl", "--interface", iface, "-s", "-m", str(timeout),
+             "https://api.ipify.org"],
+            capture_output=True, text=True, timeout=timeout + 2).stdout.strip()
+        return out if out.count(".") == 3 and len(out) <= 15 else None
+    except Exception:
+        return None
+
+
+# health classes worth bonding, and their ECMP weights (bulk hashes across
+# nexthops by these weights). Weak/bad/down are excluded — a starved radio in
+# the hash just black-holes the flows that land on it.
+_BOND_WEIGHT = {"good": 4, "ok": 2}
+
+
+def bond_plan(links):
+    """Which links to aggregate into a weighted ECMP default route: healthy
+    links (good/ok) with a KNOWN, DISTINCT public egress IP — one per backhaul,
+    since bonding two radios on the same uplink buys nothing. Returns
+    [(iface, weight)] sorted; fewer than 2 means don't bond (steer a single
+    primary instead). This gate is what makes auto-bond safe: a weak radio never
+    enters the hash."""
+    best = {}   # egress_ip -> (iface, weight)
+    for ifc, h in (links or {}).items():
+        if not h.get("connected"):
+            continue
+        w = _BOND_WEIGHT.get(h.get("score"))
+        eip = h.get("egress_ip")
+        if not w or not eip:
+            continue
+        if eip not in best or w > best[eip][1]:
+            best[eip] = (ifc, w)
+    return sorted(best.values())
+
+
 def _le(arr):
     """little-endian byte list (bpftool -j) -> int."""
     v = 0
@@ -657,14 +697,16 @@ def load_conf():
     conf = {"auto_siege": False, "advise": True,
             "advise_tx_mb": 200, "advise_peers": 8, "cold_floor_bps": 32768,
             "anomaly": True, "anomaly_factor": 3.0, "anomaly_floor_mb": 200,
-            "auto_govern": True, "cold_cap_bits": 2000000, "auto_steer": True}
+            "auto_govern": True, "cold_cap_bits": 2000000, "auto_steer": True,
+            "auto_bond": False}
     try:
         for ln in open(CONF):
             ln = ln.strip()
             if not ln or ln.startswith("#") or "=" not in ln:
                 continue
             k, v = (x.strip() for x in ln.split("=", 1))
-            if k in ("auto_siege", "advise", "anomaly", "auto_govern", "auto_steer"):
+            if k in ("auto_siege", "advise", "anomaly", "auto_govern",
+                     "auto_steer", "auto_bond"):
                 conf[k] = v.lower() in ("1", "true", "yes", "on")
             elif k in ("advise_tx_mb", "advise_peers", "cold_floor_bps",
                        "anomaly_floor_mb", "cold_cap_bits"):
@@ -1258,6 +1300,8 @@ def main():
     applied_sif = None          # iface stabilize is applied to (for teardown)
     steer_streak = 0            # ticks a healthier radio has beaten the primary
     last_steer_t = 0.0          # monotonic time of the last auto-steer switch
+    egress_cache = {}           # iface -> (public_ip, monotonic_ts) for bonding
+    bonded_set = set()          # ifaces currently aggregated into an ECMP bond
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -1389,6 +1433,17 @@ def main():
             if act_if:
                 ts_record_link(ts, time.strftime("%Y-%m-%dT%H"), act_if,
                                link_name, links[act_if])
+            # egress-IP independence (for bonding): only meaningful with 2+ links.
+            # Probe one stale link per tick, cache 5 min — distinct public IPs =
+            # independent backhauls. Cheap and lazy; skipped entirely on one link.
+            conn_ifs = [i for i, h in links.items() if h.get("connected")]
+            if len(conn_ifs) >= 2:
+                stale = [i for i in conn_ifs
+                         if now - egress_cache.get(i, (None, 0.0))[1] > 300]
+                if stale:   # short timeout: this blocks the loop, so keep it tiny
+                    egress_cache[stale[0]] = (link_egress_ip(stale[0], 3), now)
+            for i, h in links.items():
+                h["egress_ip"] = egress_cache.get(i, (None, 0.0))[0]
 
             # policy reconciler: coldspot applies ITS remembered policy for this
             # network (not a live re-read of the metered flag). New networks get
@@ -1431,11 +1486,26 @@ def main():
                         applied_pol, applied_net = pol, net
                         auto_governed = (pol != "open")
 
+            # auto-bond: aggregate 2+ healthy, independent-backhaul links into a
+            # weighted ECMP default route (bulk hashes across them). Health-gated
+            # by bond_plan, so a weak radio never enters the hash. Opt-in.
+            plan = bond_plan(links) if conf.get("auto_bond", False) else []
+            want_bond = {i for i, _ in plan} if len(plan) >= 2 else set()
+            if want_bond:
+                if want_bond != bonded_set:
+                    specs = [f"{i}:{w}" for i, w in plan]
+                    if _stance_helper("bond", *specs):
+                        bonded_set = want_bond
+            elif bonded_set:
+                _stance_helper("unbond")
+                bonded_set = set()
+
             # auto-steer: keep the primary route on the healthiest radio, entirely
             # hands-free. Instant failover if the primary died; otherwise a rival
             # must stay CLEARLY better for STEER_HYSTERESIS ticks AND clear the
             # cooldown before we switch — so two near-equal radios never ping-pong.
-            if conf.get("auto_steer", True) and links:
+            # Skipped while bonded (the bond owns the default route).
+            if not bonded_set and conf.get("auto_steer", True) and links:
                 ranked = rank_links(links)
                 best = ranked[0] if ranked else None
                 prim_h = links.get(act_if)
@@ -1509,6 +1579,9 @@ def main():
             "primary": next((i for i, h in links.items() if h.get("active")), None),
             "best_link": (rank_links(links) or [None])[0],
             "auto_steer": conf.get("auto_steer", True),
+            "auto_bond": conf.get("auto_bond", False),
+            "bonded": sorted(bonded_set),
+            "bondable": bond_plan(links),   # [[iface, weight], ...]
             "flows": flows,
             "session": {"rx_mb": round(sess["rx"] / 1e6, 1),
                         "tx_mb": round(sess["tx"] / 1e6, 1),

@@ -313,6 +313,35 @@ case "${1:-}" in
     done
     echo "steer: ${target} is primary (backups demoted)"
     ;;
+  bond)
+    # Aggregate uplinks into ONE weighted ECMP default route: new flows hash
+    # across the nexthops by weight. Args: iface:weight ... (>=2). Needs loose
+    # reverse-path filtering because the links can share a private subnet/IP.
+    require_root; shift
+    nh=()
+    for spec in "$@"; do
+      ifc="${spec%%:*}"; w="${spec##*:}"
+      gw="$(ip -4 route show default dev "$ifc" 2>/dev/null \
+            | grep -oE 'via [0-9.]+' | awk '{print $2}' | head -1)"
+      [[ -z "$gw" ]] && continue
+      sysctl -qw "net.ipv4.conf.${ifc}.rp_filter=2" 2>/dev/null || true
+      nh+=(nexthop via "$gw" dev "$ifc" weight "${w:-1}")
+    done
+    sysctl -qw net.ipv4.conf.all.rp_filter=2 2>/dev/null || true
+    if [[ ${#nh[@]} -ge 8 ]]; then    # >=2 nexthops (4 tokens each)
+      ip route replace default "${nh[@]}" && echo "bond: aggregated ${*}"
+    else
+      echo "bond: need >=2 uplinks with gateways" >&2; exit 1
+    fi
+    ;;
+  unbond)
+    # Drop the aggregate route and let NM reinstall its normal per-connection
+    # defaults (single-link routing resumes).
+    require_root
+    ip route del default 2>/dev/null || true
+    for d in /sys/class/net/wl*; do nmcli device reapply "$(basename "$d")" 2>/dev/null || true; done
+    echo "bond: off (single-link routing restored)"
+    ;;
   allow)
     require_root; ensure_cgroup
     pid="${2:?usage: coldspot-stance allow <pid>}"
