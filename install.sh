@@ -88,30 +88,28 @@ fi
 # 3. default config (kept across reinstalls)
 [[ -f /etc/coldspot.conf ]] || install -Dm644 "$SRC/config/coldspot.conf.example" /etc/coldspot.conf
 
-# 4. let `coldspot stance`/the loader call the root helpers without a prompt.
-# Write the file directly (install reading /dev/stdin is fragile under sudo) and
-# validate it before keeping it, so a bad sudoers can never lock out sudo.
-cat > /etc/sudoers.d/coldspot.tmp <<EOF
-%sudo ALL=(root) NOPASSWD: $BINDIR/coldspot-stance, $BINDIR/coldspot-bpf
-EOF
-chmod 0440 /etc/sudoers.d/coldspot.tmp
-if visudo -cf /etc/sudoers.d/coldspot.tmp >/dev/null 2>&1; then
-  mv -f /etc/sudoers.d/coldspot.tmp /etc/sudoers.d/coldspot
-else
-  rm -f /etc/sudoers.d/coldspot.tmp
-  echo "   WARN sudoers validation failed; skipped (coldspot stance/bpf will prompt for sudo)"
-fi
+# 4. privilege model: no sudo. The CLI talks to coldspotd over its control
+# socket, and access is gated by membership in the `coldspot` system group (the
+# daemon sets the socket root:coldspot 0660 and checks SO_PEERCRED). Create the
+# group and add the real user to it.
+echo "-- coldspot group + membership"
+# Drop the obsolete passwordless-root grant from older versions: the CLI no
+# longer uses sudo, so a NOPASSWD rule for the root helpers is a needless
+# local-root vector. Remove it if a prior install left it behind.
+rm -f /etc/sudoers.d/coldspot
+getent group coldspot >/dev/null || groupadd -r coldspot
+usermod -aG coldspot "$REAL_USER" || true
 
-# 5. systemd: meter daemon + daily auto-update timer
+# 5. systemd: meter daemon (+ updater units, installed but NOT enabled)
 echo "-- systemd units + enabling"
 install -m 0644 "$SRC/systemd/system/coldspotd.service"       "$UNITDIR/coldspotd.service"
 install -m 0644 "$SRC/systemd/system/coldspot-update.service" "$UNITDIR/coldspot-update.service"
 install -m 0644 "$SRC/systemd/system/coldspot-update.timer"   "$UNITDIR/coldspot-update.timer"
 systemctl daemon-reload
 systemctl enable --now coldspotd.service
-# Unlike phanspeed (.deb), coldspot is a source/tarball install that updates in
-# place by re-running this installer, so in-place auto-update is safe to enable.
-systemctl enable --now coldspot-update.timer
+# The daily updater runs code as root unattended, so it is OPT-IN for security:
+# we install the timer but do NOT enable it. Turn it on deliberately (see the
+# post-install note) after setting `auto_update = on` in /etc/coldspot.conf.
 
 # 6. GNOME pill into the real user's home
 echo "-- GNOME pill -> $EXT_DIR"
@@ -139,7 +137,6 @@ echo "-- verifying"
 verify() { local got; got="$(stat -c '%a' "$1" 2>/dev/null || echo '?')"
   [[ "$got" == "$2" ]] && echo "   OK   $1 ($got)" || echo "   WARN $1 is $got, expected $2"; }
 verify "$BINDIR/coldspotd" 755
-verify /etc/sudoers.d/coldspot 440
 
 cat <<EOF
 
@@ -148,8 +145,16 @@ cat <<EOF
   coldspot budget 500        cap this session at 500 MB
   coldspot siege             only the active task on the wire
   coldspot flows             per-destination breakdown (needs the bpf core)
-  coldspot update [--check]  pull newer releases (auto-checked daily)
+  coldspot update [--check]  pull newer releases (opt-in daily timer, see below)
   Remove:  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/uninstall.sh | bash
+
+>>> $REAL_USER was added to the 'coldspot' group, which gates the privileged
+    verbs. LOG OUT AND BACK IN (or run 'newgrp coldspot' in a shell) for the
+    membership to take effect before the CLI can drive them. <<<
+
+daily auto-update is OFF by default (it runs code as root unattended). To opt in:
+  set 'auto_update = on' in /etc/coldspot.conf, then:
+  sudo systemctl enable --now coldspot-update.timer
 
 per-app talkers without the bpf core need systemd accounting:
   sudo sed -i 's/^#\\?DefaultIPAccounting=.*/DefaultIPAccounting=yes/' /etc/systemd/system.conf && sudo systemctl daemon-reexec
