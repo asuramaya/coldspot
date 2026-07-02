@@ -6,6 +6,14 @@
 # stay in siege until you explicitly act, then it can re-arm.
 auto_siege = off
 
+# Auto-update: enable the daily root auto-updater, which is otherwise fully
+# disabled. This is opt-in for security — it runs code as root unattended. Two
+# things are required for it to actually update: this flag ON, AND the timer
+# enabled (`systemctl enable --now coldspot-update.timer`). A pinned release
+# signing key must also be provisioned, or the updater refuses to apply anything.
+# OFF by default.
+auto_update = off
+
 # Cold caps total egress to a smooth pipe (CAKE) and gives warmed tasks
 # (coldspot uncap/run) + DNS priority WITHIN it — so claude stays responsive while
 # a runaway pull/website/swarm gets only the leftover, and nothing can exceed the
@@ -34,7 +42,10 @@ auto_siege = off
 # agent swarms) get the combined bandwidth. A weak/high-loss radio is never
 # bonded (it would black-hole the flows that land on it). OFF by default —
 # situational and it manages the default route; turn on once you've confirmed
-# two healthy independent uplinks (`coldspot bond` shows the state).
+# two healthy independent uplinks (`coldspot bond` shows the state). Note:
+# enabling auto_bond also enables a periodic public-IP egress probe (a bound
+# request to an external IP-echo service, api.ipify.org) used to detect
+# independent backhauls — another reason it is off by default, for privacy/data.
 # auto_bond = off
 
 # Units the `lean` stance pauses (space-separated). Uncomment to override the

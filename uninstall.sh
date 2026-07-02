@@ -51,6 +51,9 @@ if [[ "$PURGE" -eq 1 ]]; then
   echo "-- purging config + usage history"
   rm -f /etc/coldspot.conf
   rm -rf /var/lib/coldspot
+  # Drop the privilege-gating group only on purge — a plain uninstall keeps it so
+  # a reinstall doesn't strip the user's membership (which needs a re-login).
+  groupdel coldspot 2>/dev/null || true
   echo "coldspot fully removed."
 else
   echo "coldspot removed. (kept /etc/coldspot.conf and /var/lib/coldspot — use --purge to drop them.)"

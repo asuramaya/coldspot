@@ -10,6 +10,25 @@ Restart=on-failure
 RestartSec=2
 RuntimeDirectory=coldspot
 StateDirectory=coldspot
+# Keep /run/coldspot and /var/lib/coldspot non-world-readable (0750). The daemon
+# chowns them to root:coldspot at runtime so the grouped CLI can reach the socket.
+RuntimeDirectoryMode=0750
+StateDirectoryMode=0750
+# Conservative sandbox: the daemon runs as root but is the only privileged actor,
+# so lock down what it can't legitimately need. These are compatible with the
+# privileged network helpers it shells out to (bpftool/nft/tc/nmcli/iw/curl).
+NoNewPrivileges=yes
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictRealtime=yes
+LockPersonality=yes
+# Intentionally NOT set — stronger confinement breaks the privileged helpers or
+# the BPF core: ProtectSystem=strict (writes /sys/fs/bpf, /run, /var/lib),
+# ProtectKernelModules/modprobe, ProtectKernelTunables (tc/nft sysctls),
+# MemoryDenyWriteExecute (BPF JIT), RestrictNamespaces (nft/tc netns),
+# PrivateDevices, ProtectClock.
 # v1 (BPF core) additionally needs:
 # AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_PERFMON
 # enable per-app accounting for the v0 systemd source:
