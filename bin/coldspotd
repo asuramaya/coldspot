@@ -12,11 +12,14 @@ replaces source #1 at v1 with fused metering + siege verdict. Userspace seam
 (the status.json the CLI and panel read) does not change when that lands.
 """
 import glob
+import grp
 import json
 import os
+import pwd
 import re
 import socket
 import sqlite3
+import struct
 import subprocess
 import time
 
@@ -151,6 +154,15 @@ def active_iface():
     return None
 
 
+def _sanitize_ssid(ssid):
+    """Strip control/escape bytes from an SSID (an AP name is attacker-chosen)
+    before it reaches status.json / the policy store / any terminal render — no
+    ANSI/terminal-escape injection — and bound its length. None passes through."""
+    if not ssid:
+        return ssid
+    return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', ssid)[:32]
+
+
 def read_link_health(iface):
     """Layer-1/2 health for one wifi iface via `iw`. Returns a dict (with
     connected=False when down) or None for non-wifi / iw unavailable. Parses
@@ -175,7 +187,7 @@ def read_link_health(iface):
 
     h = {"connected": True,
          "bssid": grab(out, r"Connected to ([0-9a-fA-F:]{17})"),
-         "ssid": grab(out, r"SSID:\s*(.+)"),
+         "ssid": _sanitize_ssid(grab(out, r"SSID:\s*(.+)")),
          "signal_dbm": grab(out, r"signal:\s*(-?\d+)", int),
          "freq_mhz": grab(out, r"freq:\s*(\d+)", int),
          "tx_mbps": grab(out, r"tx bitrate:\s*([\d.]+)", float),
@@ -1265,6 +1277,93 @@ def atomic_write(path, obj):
     with open(tmp, "w") as f:
         json.dump(obj, f)
     os.replace(tmp, path)
+    # sensitive state (status/policy/history/ledger/usage) — non-world-readable.
+    try:
+        os.chmod(path, 0o640)
+    except OSError:
+        pass
+
+
+# --- privileged control socket: the daemon is the ONLY privileged actor -------
+# The unprivileged CLI sends JSON commands here; the daemon performs the root op
+# itself (via coldspot-stance). All arg-carrying commands are validated below so
+# nothing but a real interface name / live pid can reach the root helper.
+_IFACE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _net_ifaces():
+    """The kernel's current netdev set — the allowlist iface args are checked
+    against, so no crafted string can be smuggled into the root helper."""
+    try:
+        return set(os.listdir("/sys/class/net"))
+    except OSError:
+        return set()
+
+
+def _iface_ok(name, known):
+    """Strict: a syntactically safe name that is an actual interface in `known`
+    (pure — caller supplies the netdev set, so it's testable)."""
+    return bool(name) and isinstance(name, str) \
+        and bool(_IFACE_RE.match(name)) and name in known
+
+
+def _bond_spec_ok(spec, known):
+    """Validate one 'iface:weight' bond spec: a known iface, an int weight."""
+    if not isinstance(spec, str) or ":" not in spec:
+        return False
+    ifc, _, w = spec.partition(":")
+    if not _iface_ok(ifc, known):
+        return False
+    try:
+        int(w)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _pid_alive(pid):
+    """True for a live positive-int pid (os.kill sig 0). PermissionError means it
+    exists but is owned by another user — still 'alive' for our validation."""
+    if not (isinstance(pid, int) and pid > 0):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _reply(ok, err="helper failed"):
+    """Serialize a command result for the control socket."""
+    return json.dumps({"ok": True} if ok
+                      else {"ok": False, "err": err}).encode() + b"\n"
+
+
+def _peer_allowed(conn, cs_gid):
+    """SO_PEERCRED authorization: allow root, else a peer whose primary group is
+    `coldspot` or who is a listed member. DEFAULT DENY for any non-root peer we
+    can't positively verify. Only consulted when the daemon runs as root."""
+    try:
+        creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                struct.calcsize("3i"))
+        _pid, uid, _gid = struct.unpack("3i", creds)
+    except OSError:
+        return False
+    if uid == 0:
+        return True
+    if cs_gid is None:
+        return False
+    try:
+        pw = pwd.getpwuid(uid)
+        if pw.pw_gid == cs_gid:
+            return True
+        return pw.pw_name in grp.getgrnam("coldspot").gr_mem
+    except (KeyError, OSError):
+        return False
 
 
 def main():
@@ -1309,10 +1408,30 @@ def main():
     except OSError:
         pass
     srv.bind(SOCK)
-    # 0666: the unprivileged CLI (run as the user) sets stance/budget/reset here.
-    # Commands are benign local policy toggles; enforcement still goes through the
-    # privileged helper, so a loose socket can't escalate.
-    os.chmod(SOCK, 0o666)
+    # The daemon is now the only privileged actor, so the socket carries real
+    # authority: lock it to root + the `coldspot` group (0660) and lock down the
+    # RUN/STATE dirs to match. DEV/TEST (euid!=0, e.g. the smoke test run as a
+    # normal user) keeps the old loose 0666 and no group ownership — the peer-cred
+    # gate below is skipped there too, preserving current dev behavior.
+    cs_gid = None
+    if os.geteuid() == 0:
+        try:
+            cs_gid = grp.getgrnam("coldspot").gr_gid
+        except KeyError:
+            cs_gid = None
+        if cs_gid is not None:
+            os.chown(SOCK, 0, cs_gid)
+            os.chmod(SOCK, 0o660)
+            for dpath in (RUN, STATE):
+                try:
+                    os.chown(dpath, 0, cs_gid)
+                    os.chmod(dpath, 0o750)
+                except OSError:
+                    pass
+        else:
+            os.chmod(SOCK, 0o600)   # no group -> root-only
+    else:
+        os.chmod(SOCK, 0o666)       # dev: unchanged (smoke runs as a user)
     srv.listen()
     srv.settimeout(SAMPLE)
 
@@ -1326,6 +1445,13 @@ def main():
         # 1) non-blocking control drain
         try:
             conn, _ = srv.accept()
+            # peer-cred gate (root only): accept a command ONLY from root or a
+            # member of the `coldspot` group; default-deny everything else. Dev
+            # (euid!=0) skips this entirely — preserving the smoke test.
+            if os.geteuid() == 0 and not _peer_allowed(conn, cs_gid):
+                conn.sendall(b'{"ok":false,"err":"unauthorized"}\n')
+                conn.close()
+                continue
             req = json.loads(conn.recv(4096).split(b"\n", 1)[0] or b"{}")
             cmd = req.get("cmd")
             if cmd == "set":
@@ -1338,6 +1464,8 @@ def main():
                     manual_override = True
                     auto_governed = False
                     applied_pol, applied_sif = None, None
+                    # the CLI no longer sudo's — the daemon enforces the stance.
+                    enforce(stance)
                 if "budget" in req:
                     budget = req["budget"]  # MB or None
                     escalated = False
@@ -1370,6 +1498,60 @@ def main():
                     atomic_write(POLICY_DB, policies)
                     applied_pol = None        # re-seed on the next tick
                 conn.sendall(b'{"ok":true}\n')
+            # --- privileged ops the CLI used to sudo; now routed through here ---
+            elif cmd == "uncap":
+                pid = req.get("pid")
+                if not _pid_alive(pid):
+                    conn.sendall(_reply(False, "bad pid"))
+                else:
+                    conn.sendall(_reply(_stance_helper("allow", str(pid))))
+            elif cmd == "limit":
+                rate = req.get("rate_bits")
+                lif = active_iface() or iface
+                if not (isinstance(rate, int) and rate > 0):
+                    conn.sendall(_reply(False, "bad rate"))
+                elif not _iface_ok(lif, _net_ifaces()):
+                    conn.sendall(_reply(False, "no iface"))
+                else:
+                    conn.sendall(_reply(_stance_helper("limit", lif, str(rate))))
+            elif cmd == "unlimit":
+                lif = active_iface() or iface
+                if not _iface_ok(lif, _net_ifaces()):
+                    conn.sendall(_reply(False, "no iface"))
+                else:
+                    conn.sendall(_reply(_stance_helper("unlimit", lif)))
+            elif cmd == "stabilize":
+                sif, ul, dl = req.get("iface"), req.get("ul"), req.get("dl")
+                if not _iface_ok(sif, _net_ifaces()):
+                    conn.sendall(_reply(False, "bad iface"))
+                elif not (isinstance(ul, int) and ul > 0
+                          and isinstance(dl, int) and dl > 0):
+                    conn.sendall(_reply(False, "bad rates"))
+                else:
+                    conn.sendall(_reply(
+                        _stance_helper("stabilize", sif, str(ul), str(dl))))
+            elif cmd == "unstabilize":
+                sif = req.get("iface")
+                if not _iface_ok(sif, _net_ifaces()):
+                    conn.sendall(_reply(False, "bad iface"))
+                else:
+                    conn.sendall(_reply(_stance_helper("unstabilize", sif)))
+            elif cmd == "steer":
+                tif = req.get("iface")
+                if not _iface_ok(tif, _net_ifaces()):
+                    conn.sendall(_reply(False, "bad iface"))
+                else:
+                    conn.sendall(_reply(_stance_helper("steer", tif)))
+            elif cmd == "bond":
+                specs = req.get("specs")
+                known = _net_ifaces()
+                if not (isinstance(specs, list) and len(specs) >= 2
+                        and all(_bond_spec_ok(s, known) for s in specs)):
+                    conn.sendall(_reply(False, "bad specs"))
+                else:
+                    conn.sendall(_reply(_stance_helper("bond", *specs)))
+            elif cmd == "unbond":
+                conn.sendall(_reply(_stance_helper("unbond")))
             else:
                 conn.sendall(b'{"ok":true}\n')
             conn.close()
@@ -1437,13 +1619,18 @@ def main():
             # Probe one stale link per tick, cache 5 min — distinct public IPs =
             # independent backhauls. Cheap and lazy; skipped entirely on one link.
             conn_ifs = [i for i, h in links.items() if h.get("connected")]
-            if len(conn_ifs) >= 2:
+            if conf.get("auto_bond", False) and len(conn_ifs) >= 2:
                 stale = [i for i in conn_ifs
                          if now - egress_cache.get(i, (None, 0.0))[1] > 300]
                 if stale:   # short timeout: this blocks the loop, so keep it tiny
                     egress_cache[stale[0]] = (link_egress_ip(stale[0], 3), now)
             for i, h in links.items():
                 h["egress_ip"] = egress_cache.get(i, (None, 0.0))[0]
+
+            # populate the `critical` BPF map BEFORE the reconciler can enforce
+            # cold this tick — else NM/DNS/updates could be throttled in the
+            # window between applying cold and mapping the critical cgroups.
+            set_critical_cgroups()
 
             # policy reconciler: coldspot applies ITS remembered policy for this
             # network (not a live re-read of the metered flag). New networks get
@@ -1547,7 +1734,6 @@ def main():
                 anomalies = detect_anomalies(ts, today, conf)
             advice = advise(flows_full, conf) + anomalies   # nudges + anomalies
             set_metered_cfg(iface)   # keep the core pinned to the metered link
-            set_critical_cgroups()   # keep cold from throttling NM/DNS/updates
             history_prune(history)
             ledger_prune(ledger)
             atomic_write(HISTORY_DB, history)
