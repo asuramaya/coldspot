@@ -1367,6 +1367,10 @@ def _peer_allowed(conn, cs_gid):
 
 
 def main():
+    # Never create world-readable files: status.json + the state stores carry
+    # SSIDs, egress IPs, per-app usage and DNS-snooped hostnames. Combined with
+    # the setgid group dirs below, everything lands root:coldspot 0640/0750.
+    os.umask(0o027)
     os.makedirs(RUN, exist_ok=True)
     os.makedirs(STATE, exist_ok=True)
     iface = metered_iface()
@@ -1422,10 +1426,22 @@ def main():
         if cs_gid is not None:
             os.chown(SOCK, 0, cs_gid)
             os.chmod(SOCK, 0o660)
+            # setgid (02750) so files written here inherit group `coldspot` —
+            # the CLI + GNOME pill (run as the user, in that group) can then read
+            # status.json / the time-series, while the world still cannot.
             for dpath in (RUN, STATE):
                 try:
                     os.chown(dpath, 0, cs_gid)
-                    os.chmod(dpath, 0o750)
+                    os.chmod(dpath, 0o2750)
+                except OSError:
+                    pass
+            # files created BEFORE the setgid took effect (the sqlite DB opened
+            # at startup, plus any state carried over from a prior run) keep the
+            # wrong group — re-group them so the user side can read them too.
+            for fpath in (TS_DB, DAY_DB, HISTORY_DB, LEDGER_DB, POLICY_DB, STATUS):
+                try:
+                    os.chown(fpath, 0, cs_gid)
+                    os.chmod(fpath, 0o640)
                 except OSError:
                     pass
         else:
