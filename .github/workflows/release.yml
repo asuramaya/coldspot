@@ -31,16 +31,46 @@ jobs:
           echo "--- contents ---"
           tar -tzf coldspot.tar.gz
 
+      - name: Sign release tarball (minisign)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          # coldspot-update trusts a detached minisign signature verified against
+          # a PINNED public key and refuses to install without it. Sign the
+          # release here so auto-update can authenticate it. Guarded: if the
+          # secret key isn't provisioned yet, warn and skip (leave the release
+          # unsigned) instead of failing the build.
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "::warning::MINISIGN_SECRET_KEY not set — skipping signing; release will be UNSIGNED and auto-update will refuse it."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y minisign
+          keyfile="$(mktemp)"
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > "${keyfile}"
+          # Password piped on stdin (empty line is fine for an unencrypted key);
+          # -Sm writes the detached signature to coldspot.tar.gz.minisig.
+          printf '%s\n' "${MINISIGN_PASSWORD:-}" | minisign -Sm coldspot.tar.gz -s "${keyfile}"
+          rm -f "${keyfile}"
+          echo "--- signature ---"
+          ls -l coldspot.tar.gz.minisig
+
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" \
-              coldspot.tar.gz coldspot.tar.gz.sha256 --clobber
+          # Ship the signature alongside the tarball + sha256 when signing ran;
+          # if it was skipped (no secret yet), release the unsigned assets.
+          assets=(coldspot.tar.gz coldspot.tar.gz.sha256)
+          if [ -f coldspot.tar.gz.minisig ]; then
+            assets+=(coldspot.tar.gz.minisig)
           else
-            gh release create "${GITHUB_REF_NAME}" \
-              coldspot.tar.gz coldspot.tar.gz.sha256 \
+            echo "::warning::coldspot.tar.gz.minisig missing — releasing UNSIGNED assets."
+          fi
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
               --title "coldspot ${GITHUB_REF_NAME}" \
               --generate-notes
           fi

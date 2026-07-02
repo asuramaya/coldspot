@@ -4,11 +4,20 @@
 # coldspot-update — check GitHub for newer releases and install them in place.
 #
 # coldspot is a source/tarball install (binaries in /usr/local/bin), so updating
-# means re-running the latest, checksum-verified installer — the same path a
-# fresh `curl | bash` takes. That is safe to do in place (no .deb shadowing like
-# phanspeed), which is why install.sh enables the daily timer that runs this.
+# means fetching the published release tarball and re-running the installer FROM
+# that verified tarball. We deliberately do NOT pipe a network script to root
+# bash: the trust root is a detached minisign signature (coldspot.tar.gz.minisig)
+# verified against a PINNED public key. A co-located sha256 only detects
+# corruption, not a repo/account compromise (whoever can publish a release can
+# publish a matching hash too), so the signature is mandatory and the updater
+# FAILS CLOSED — no signature, no key, or no minisign means no install.
 #
-#   coldspot-update            install if a newer release exists
+# Auto-update is OPT-IN. The systemd timer runs `coldspot-update --auto`, which
+# no-ops unless auto_update is turned on in /etc/coldspot.conf. A manual run
+# (`coldspot update`) is explicit user action and proceeds regardless.
+#
+#   coldspot-update            install if a newer release exists (manual)
+#   coldspot-update --auto     timer path; obeys auto_update= in coldspot.conf
 #   coldspot-update --check    report only, don't install
 #   coldspot-update --json     machine-readable {current,latest,available}
 # Intended to run from coldspot-update.timer (daily) as root.
@@ -16,6 +25,16 @@ set -uo pipefail
 
 REPO="asuramaya/coldspot"
 VERSION_FILE="/usr/local/share/coldspot/VERSION"
+CONF="/etc/coldspot.conf"
+REL_BASE="https://github.com/${REPO}/releases/latest/download"
+
+# Pinned minisign public key for release authenticity. This MUST be set to the
+# project's real minisign public key (the base64 string on the line after the
+# "untrusted comment:" line of minisign.pub, e.g. "RWQ...") before auto-update
+# can ever install anything. While it is empty, signature verification cannot
+# succeed, so the updater fails closed and auto-update stays disabled. The
+# matching secret key is provisioned in CI (see .github/workflows/release.yml).
+COLDSPOT_MINISIGN_PUBKEY=""
 
 installed_version() {
   tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null \
@@ -32,11 +51,98 @@ version_gt() {  # true only when $1 is strictly newer than $2
   [[ "$1" != "$2" ]] && [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" ]]
 }
 
+# True only when /etc/coldspot.conf sets auto_update to a truthy value. Absent
+# key or any other value keeps auto-update OFF (secure default).
+auto_update_enabled() {
+  local v
+  v="$(sed -n 's/^[[:space:]]*auto_update[[:space:]]*=[[:space:]]*\([^#[:space:]]*\).*/\1/p' \
+       "$CONF" 2>/dev/null | tail -n1)"
+  case "${v,,}" in on|true|yes|1) return 0 ;; *) return 1 ;; esac
+}
+
+# Fetch, VERIFY (mandatory signature) and run the installer from the verified
+# tarball. Fails closed and returns non-zero on any missing/failed check; never
+# falls back to hash-only trust or to a network-piped script / the main branch.
+verify_and_install() {
+  command -v curl >/dev/null 2>&1 || { echo "curl is required to update." >&2; return 1; }
+  command -v tar  >/dev/null 2>&1 || { echo "tar is required to update." >&2; return 1; }
+
+  # Trust root #1: a pinned public key must be compiled in.
+  if [[ -z "$COLDSPOT_MINISIGN_PUBKEY" ]]; then
+    echo "ERROR: no pinned minisign public key set; refusing to install (fail closed)." >&2
+    echo "       Set COLDSPOT_MINISIGN_PUBKEY in coldspot-update to the project key." >&2
+    return 1
+  fi
+  # Trust root #2: the verifier itself must be present.
+  command -v minisign >/dev/null 2>&1 || {
+    echo "ERROR: minisign not installed; cannot verify release authenticity. Aborting." >&2
+    echo "       Install it (e.g. 'apt-get install -y minisign') and retry." >&2
+    return 1; }
+
+  local tmp tarball sig
+  tmp="$(mktemp -d)" || { echo "mktemp failed." >&2; return 1; }
+  trap 'rm -rf "$tmp"' RETURN
+  tarball="$tmp/coldspot.tar.gz"
+  sig="${tarball}.minisig"   # minisign -Vm looks for <tarball>.minisig by default
+
+  echo "== fetching latest coldspot release =="
+  curl -fsSL "${REL_BASE}/coldspot.tar.gz"         -o "$tarball" \
+    || { echo "download failed (tarball)." >&2; return 1; }
+  curl -fsSL "${REL_BASE}/coldspot.tar.gz.minisig" -o "$sig" \
+    || { echo "download failed (signature) — release is unsigned or unreachable; aborting." >&2; return 1; }
+
+  # MANDATORY: detached-signature verification against the pinned public key.
+  if ! minisign -Vm "$tarball" -P "$COLDSPOT_MINISIGN_PUBKEY" >/dev/null 2>&1; then
+    echo "ERROR: signature verification FAILED; refusing to install." >&2
+    return 1
+  fi
+  echo "verified release signature."
+
+  # ADDITIONAL (non-authoritative) integrity check: the co-located sha256, when
+  # published. This only catches corruption; the signature above is the trust.
+  if command -v sha256sum >/dev/null 2>&1; then
+    local want got
+    want="$(curl -fsSL "${REL_BASE}/coldspot.tar.gz.sha256" 2>/dev/null \
+          | awk '$2 == "coldspot.tar.gz" { print $1; exit }')"
+    if [[ -n "$want" ]]; then
+      got="$(sha256sum "$tarball" | awk '{print $1}')"
+      [[ "$want" == "$got" ]] \
+        || { echo "ERROR: sha256 mismatch after signature check; aborting." >&2; return 1; }
+      echo "verified release checksum."
+    fi
+  fi
+
+  tar -xzf "$tarball" -C "$tmp" || { echo "extract failed." >&2; return 1; }
+  local inner
+  inner="$(find "$tmp" -maxdepth 2 -name install.sh -type f | head -n1)"
+  [[ -n "$inner" ]] || { echo "install.sh not found in verified archive." >&2; return 1; }
+  echo "running installer from verified tarball ..."
+  bash "$inner"   # local, signature-verified script — never a network pipe
+}
+
+# ---- arg parsing (order-independent flags; unknown args ignored) -----------
+auto=0 check=0 json=0
+for a in "$@"; do
+  case "$a" in
+    --auto)  auto=1 ;;
+    --check) check=1 ;;
+    --json)  json=1 ;;
+    *) ;;
+  esac
+done
+
+# Opt-in gate for the timer path: exit early (before any network work) unless
+# the user turned on auto_update in /etc/coldspot.conf. Manual runs (auto=0)
+# skip this entirely — running `coldspot update` is explicit consent.
+if [[ "$auto" -eq 1 && "$json" -eq 0 ]] && ! auto_update_enabled; then
+  echo "auto-update is disabled; set auto_update=on in ${CONF} to enable."
+  exit 0
+fi
+
 cur="$(installed_version)"
 latest="$(latest_release_version)"
-mode="${1:-}"
 
-if [[ "$mode" == "--json" ]]; then
+if [[ "$json" -eq 1 ]]; then
   avail=false
   [[ -n "$latest" ]] && version_gt "$latest" "$cur" && avail=true
   printf '{"current":"%s","latest":%s,"available":%s}\n' \
@@ -54,9 +160,8 @@ if ! version_gt "$latest" "$cur"; then
 fi
 
 echo "update available: ${cur:-unknown} -> ${latest}"
-[[ "$mode" == "--check" ]] && exit 0
+[[ "$check" -eq 1 ]] && exit 0
 
 echo "updating coldspot ${cur:-unknown} -> ${latest} ..."
-# Re-run the latest installer; it fetches + checksum-verifies the release tarball
-# and re-execs itself with sudo as needed.
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/install.sh" | bash
+verify_and_install
+exit $?

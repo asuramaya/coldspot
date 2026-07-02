@@ -1,6 +1,10 @@
 [Unit]
 Description=coldspot daily auto-update check
 
+# NOT enabled by default: auto-update is opt-in. The installer no longer enables
+# this timer, and even when enabled it triggers coldspot-update.service which
+# no-ops unless auto_update=on in /etc/coldspot.conf. Enable with:
+#   sudo systemctl enable --now coldspot-update.timer
 [Timer]
 OnBootSec=10min
 OnUnitActiveSec=1d
