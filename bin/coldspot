@@ -42,7 +42,6 @@ RUN = "/run/coldspot"
 SOCK = f"{RUN}/control.sock"
 STATUS = f"{RUN}/status.json"
 TS_DB = "/var/lib/coldspot/coldspot.db"   # the daemon's time-series (read-only)
-STANCE_HELPER = "coldspot-stance"  # root helper, on PATH or next to us
 STANCES = ("open", "lean", "siege", "cold")
 HERE = os.path.dirname(os.path.realpath(__file__))
 
@@ -86,14 +85,15 @@ def _set(**kw):
     return r
 
 
-def _helper(*args):
-    """Run the privileged stance/cgroup helper (via sudo if not root)."""
-    bin_ = STANCE_HELPER
-    local = os.path.join(HERE, STANCE_HELPER)
-    if os.path.exists(local):
-        bin_ = local
-    cmd = ([] if os.geteuid() == 0 else ["sudo"]) + [bin_, *args]
-    return subprocess.call(cmd)
+def _cmd(**kw):
+    """Ask the (root) daemon to perform a privileged op over the control socket
+    and return (ok, err). The daemon is the only privileged actor now — the CLI
+    never sudo's for stance/steer/bond/limit/stabilize/uncap/run."""
+    try:
+        r = _sock(kw)
+    except OSError as e:
+        return False, f"cannot reach coldspotd ({e}); is the service running?"
+    return bool(r.get("ok")), r.get("err")
 
 
 def cmd_status(args):
@@ -459,11 +459,10 @@ def cmd_stance(args):
     if not args or args[0] not in STANCES:
         sys.exit(f"usage: coldspot stance <{'|'.join(STANCES)}>")
     name = args[0]
-    _helper("stance", name)    # enforcement first — never depends on the daemon
-    try:                       # then update the meter (best-effort)
-        _sock({"cmd": "set", "stance": name})
-    except OSError:
-        pass
+    # the daemon (root) both enforces the stance AND updates the meter now.
+    ok, err = _cmd(cmd="set", stance=name)
+    if not ok:
+        sys.exit(f"rejected: {err}")
     print(f"stance -> {name}")
 
 
@@ -498,18 +497,18 @@ def cmd_limit(args):
     class; everything else shares the leftover trickle."""
     if not args:
         sys.exit("usage: coldspot limit <rate|off>   e.g. 1mbps, 500kbps, 1MB/s")
-    iface = (_status() or {}).get("iface") or _default_iface()
-    if not iface:
-        sys.exit("can't determine the interface (is coldspotd running?)")
     if args[0] in ("off", "0", "none"):
-        sys.exit(_helper("unlimit", iface))
+        ok, err = _cmd(cmd="unlimit")   # daemon resolves the iface
+        if ok:
+            print("limit -> off")
+        sys.exit(0 if ok else (err or "unlimit failed"))
     bits = _parse_rate(args[0])
     if not bits or bits <= 0:
         sys.exit(f"bad rate '{args[0]}' (try 1mbps, 500kbps, 1MB/s)")
-    rc = _helper("limit", iface, str(bits))
-    if rc == 0:
-        print(f"limit -> {args[0]} on {iface}  (~{bits // 1000} kbit/s total egress)")
-    sys.exit(rc)
+    ok, err = _cmd(cmd="limit", rate_bits=bits)
+    if ok:
+        print(f"limit -> {args[0]}  (~{bits // 1000} kbit/s total egress)")
+    sys.exit(0 if ok else (err or "limit failed"))
 
 
 def _active_wifi():
@@ -533,12 +532,12 @@ def _stabilize_auto(rest):
                  f"coldspot stabilize 2mbps 1mbps {iface}")
     dl_c = int((rxp or txp) * 1e6 * 0.5)
     ul_c = int((txp or rxp) * 1e6 * 0.5)
-    rc = _helper("stabilize", iface, str(ul_c), str(dl_c))
-    if rc == 0:
+    ok, err = _cmd(cmd="stabilize", iface=iface, ul=ul_c, dl=dl_c)
+    if ok:
         print(f"stabilize auto -> {iface}: down≤{dl_c // 1000} up≤{ul_c // 1000} "
               f"kbit/s  (from {rxp or '?'}/{txp or '?'} Mbit PHY; "
               f"ack-filter + ingress AQM, power-save off)")
-    sys.exit(rc)
+    sys.exit(0 if ok else (err or "stabilize failed"))
 
 
 def cmd_stabilize(args):
@@ -570,20 +569,20 @@ def cmd_stabilize(args):
     if not iface:
         sys.exit("can't determine the interface (pass it: coldspot stabilize 2mbps <iface>)")
     if off:
-        rc = _helper("unstabilize", iface)
-        if rc == 0:
+        ok, err = _cmd(cmd="unstabilize", iface=iface)
+        if ok:
             print(f"stabilize off — {iface} back to normal")
-        sys.exit(rc)
+        sys.exit(0 if ok else (err or "unstabilize failed"))
     if not dl or dl <= 0:
         sys.exit("bad rate; try: coldspot stabilize 2mbps 800kbps [iface]")
     # cap ~15% under the measured ceiling so the queue lives in our shaper (where
     # ack-filter + AQM run), not the driver's dumb FIFO where bufferbloat forms.
     ul_c, dl_c = int(ul * 0.85), int(dl * 0.85)
-    rc = _helper("stabilize", iface, str(ul_c), str(dl_c))
-    if rc == 0:
+    ok, err = _cmd(cmd="stabilize", iface=iface, ul=ul_c, dl=dl_c)
+    if ok:
         print(f"stabilize -> {iface}: down≤{dl_c // 1000} up≤{ul_c // 1000} kbit/s "
               f"(ack-filter + ingress AQM + warmed-task priority, power-save off)")
-    sys.exit(rc)
+    sys.exit(0 if ok else (err or "stabilize failed"))
 
 
 def _policy_cmd(obj):
@@ -653,10 +652,10 @@ def cmd_steer(args):
             sys.exit("no healthy link to steer to (is coldspotd running?)")
     else:
         iface = args[0]
-    rc = _helper("steer", iface)
-    if rc == 0:
+    ok, err = _cmd(cmd="steer", iface=iface)
+    if ok:
         print(f"steer → {iface} is now primary; others demoted to backups")
-    sys.exit(rc)
+    sys.exit(0 if ok else (err or "steer failed"))
 
 
 def cmd_bond(args):
@@ -676,7 +675,10 @@ def cmd_bond(args):
                 print(f"    {i}: {h.get('score')}  egress {h.get('egress_ip') or '?'}")
         return
     if args[0] == "off":
-        sys.exit(_helper("unbond"))
+        ok, err = _cmd(cmd="unbond")
+        if ok:
+            print("bond → off (single-link routing restored)")
+        sys.exit(0 if ok else (err or "unbond failed"))
     if args[0] == "auto":
         able = st.get("bondable") or []
         if len(able) < 2:
@@ -687,10 +689,10 @@ def cmd_bond(args):
         specs = [a if ":" in a else f"{a}:1" for a in args]
         if len(specs) < 2:
             sys.exit("usage: coldspot bond <iface> <iface> [...] | auto | off")
-    rc = _helper("bond", *specs)
-    if rc == 0:
+    ok, err = _cmd(cmd="bond", specs=specs)
+    if ok:
         print(f"bond → aggregated {', '.join(specs)}")
-    sys.exit(rc)
+    sys.exit(0 if ok else (err or "bond failed"))
 
 
 def cmd_budget(args):
@@ -727,11 +729,14 @@ def cmd_uncap(args):
     pids = _pids_for(target)
     if not pids:
         sys.exit(f"no process matching '{target}'")
-    rc = 0
+    ok_all, last_err = True, None
     for p in pids:
-        rc |= _helper("allow", p)
+        ok, err = _cmd(cmd="uncap", pid=int(p))
+        if not ok:
+            ok_all, last_err = False, err
+    if not ok_all:
+        sys.exit(last_err or "uncap failed")
     print(f"warmed {target} ({len(pids)} pid(s)) — full speed even under cold")
-    sys.exit(rc)
 
 
 def cmd_allow(args):
@@ -740,7 +745,8 @@ def cmd_allow(args):
     # allow is the by-pid primitive; uncap adds name resolution on top
     if not args[0].isdigit():
         return cmd_uncap(args)
-    sys.exit(_helper("allow", args[0]))
+    ok, err = _cmd(cmd="uncap", pid=int(args[0]))
+    sys.exit(0 if ok else (err or "allow failed"))
 
 
 def cmd_run(args):
@@ -748,7 +754,20 @@ def cmd_run(args):
         sys.exit("usage: coldspot run -- <cmd...>")
     if args and args[0] == "--":
         args = args[1:]
-    sys.exit(_helper("run", *args))
+    if not args:
+        sys.exit("usage: coldspot run -- <cmd...>")
+    # Run CMD as the invoking USER (inherit tty/stdio/cwd/env) — no root exec in
+    # the CLI. Warm it by asking the daemon (root) to move the child into
+    # coldspot.slice, best-effort so the task still runs if the daemon is down.
+    try:
+        p = subprocess.Popen(args)
+    except OSError as e:
+        sys.exit(f"cannot run {args[0]!r}: {e}")
+    try:
+        _sock({"cmd": "uncap", "pid": p.pid})
+    except OSError:
+        pass
+    sys.exit(p.wait())
 
 
 def cmd_reset(args):

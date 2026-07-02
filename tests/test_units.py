@@ -568,6 +568,49 @@ def test_bond_plan():
     assert d.bond_plan(unk) == [("A", 4)]
 
 
+# ---- security hardening: input validation + SSID sanitize (pure) -----------
+def test_sanitize_ssid():
+    # control/escape bytes stripped so no ANSI/terminal escape reaches display
+    assert d._sanitize_ssid("home\x1b[31mwifi\x00") == "home[31mwifi"
+    assert d._sanitize_ssid("café-5G") == "café-5G"   # printable unicode kept
+    assert d._sanitize_ssid("x" * 50) == "x" * 32     # length-bounded
+    assert d._sanitize_ssid(None) is None             # falsy passes through
+    assert d._sanitize_ssid("") == ""
+
+
+def test_iface_ok():
+    known = {"wlp2s0", "wlx001", "eth0", "lo"}
+    assert d._iface_ok("wlp2s0", known) is True
+    assert d._iface_ok("eth0", known) is True
+    assert d._iface_ok("wlan9", known) is False       # syntactically ok, not a netdev
+    # argument-smuggling attempts rejected by the strict regex
+    assert d._iface_ok("wlp2s0; rm -rf /", known) is False
+    assert d._iface_ok("../../etc", known) is False
+    assert d._iface_ok("wlp2s0 x", known) is False
+    assert d._iface_ok("", known) is False
+    assert d._iface_ok(None, known) is False
+
+
+def test_bond_spec_ok():
+    known = {"wlp2s0", "wlx001"}
+    assert d._bond_spec_ok("wlp2s0:4", known) is True
+    assert d._bond_spec_ok("wlx001:1", known) is True
+    assert d._bond_spec_ok("eth9:2", known) is False      # unknown iface
+    assert d._bond_spec_ok("wlp2s0:x", known) is False    # non-int weight
+    assert d._bond_spec_ok("wlp2s0", known) is False      # no weight
+    assert d._bond_spec_ok("wlp2s0:4; reboot", known) is False
+    assert d._bond_spec_ok(123, known) is False
+
+
+def test_pid_alive():
+    assert d._pid_alive(os.getpid()) is True
+    assert d._pid_alive(2**31 - 1) is False   # far above any pid_max -> free
+    assert d._pid_alive(0) is False
+    assert d._pid_alive(-5) is False
+    assert d._pid_alive("123") is False       # non-int rejected
+    assert d._pid_alive(None) is False
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

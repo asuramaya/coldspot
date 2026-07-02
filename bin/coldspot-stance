@@ -11,6 +11,7 @@ set -euo pipefail
 SLICE="coldspot.slice"
 CG="/sys/fs/cgroup/${SLICE}"
 PIN="/sys/fs/bpf/coldspot"
+RP_SAVE="/run/coldspot/rp_filter.save"   # bond saves prior rp_filter here
 # systemd units `lean` pauses (data hogs). Override in /etc/coldspot.conf:
 #   lean_hogs = packagekit snapd fwupd-refresh ...
 HOGS=(packagekit snapd fwupd-refresh unattended-upgrades)
@@ -44,6 +45,20 @@ cold_cap_bits() {
 }
 
 default_iface() { ip route 2>/dev/null | awk '/^default/{print $5; exit}'; }
+
+# Record a sysctl key's CURRENT value before bond overwrites it — once per
+# session, so re-bonding (adding a link) never clobbers the real baseline.
+# unbond restores from this file, then removes it.
+rp_save() {
+  local key="$1" cur
+  mkdir -p "$(dirname "$RP_SAVE")"
+  touch "$RP_SAVE"
+  if grep -q "^${key}=" "$RP_SAVE" 2>/dev/null; then
+    return 0
+  fi
+  cur="$(sysctl -n "$key" 2>/dev/null || echo 1)"
+  echo "${key}=${cur}" >> "$RP_SAVE"
+}
 
 # Point the bpf core at the coldspot.slice subtree as the siege survivor. The
 # core matches by ANCESTOR id, so every descendant (run-*.scope, loose) survives
@@ -319,11 +334,13 @@ case "${1:-}" in
     # reverse-path filtering because the links can share a private subnet/IP.
     require_root; shift
     nh=()
+    rp_save "net.ipv4.conf.all.rp_filter"    # save the global before we relax it
     for spec in "$@"; do
       ifc="${spec%%:*}"; w="${spec##*:}"
       gw="$(ip -4 route show default dev "$ifc" 2>/dev/null \
             | grep -oE 'via [0-9.]+' | awk '{print $2}' | head -1)"
       [[ -z "$gw" ]] && continue
+      rp_save "net.ipv4.conf.${ifc}.rp_filter"   # save per-iface before relaxing
       sysctl -qw "net.ipv4.conf.${ifc}.rp_filter=2" 2>/dev/null || true
       nh+=(nexthop via "$gw" dev "$ifc" weight "${w:-1}")
     done
@@ -338,8 +355,25 @@ case "${1:-}" in
     # Drop the aggregate route and let NM reinstall its normal per-connection
     # defaults (single-link routing resumes).
     require_root
-    ip route del default 2>/dev/null || true
-    for d in /sys/class/net/wl*; do nmcli device reapply "$(basename "$d")" 2>/dev/null || true; done
+    # restore the rp_filter values bond saved (global + per-iface), then drop the
+    # save file so the next bond captures a fresh baseline.
+    if [[ -f "$RP_SAVE" ]]; then
+      while IFS='=' read -r key val; do
+        [[ -n "$key" ]] && sysctl -qw "${key}=${val}" 2>/dev/null || true
+      done < "$RP_SAVE"
+      rm -f "$RP_SAVE"
+    fi
+    # only delete the default route if it's the ECMP/multipath one WE added
+    # (multiple `nexthop` legs) — never clobber a normal single-link default.
+    if ip -4 route show default 2>/dev/null | grep -q nexthop; then
+      ip route del default 2>/dev/null || true
+    fi
+    # reapply EVERY connected non-lo device (a bond can include usb/eth tethers,
+    # not just wl*) so NM reinstalls its per-connection defaults.
+    while IFS=: read -r dev state; do
+      [[ -z "$dev" || "$dev" == "lo" ]] && continue
+      [[ "$state" == "connected" ]] && nmcli device reapply "$dev" 2>/dev/null || true
+    done < <(nmcli -t -f DEVICE,STATE device status 2>/dev/null)
     echo "bond: off (single-link routing restored)"
     ;;
   allow)
@@ -352,11 +386,7 @@ case "${1:-}" in
     bpf_set_siege_target
     echo "allowed: pid $pid -> $SLICE/loose"
     ;;
-  run)
-    require_root; ensure_cgroup; shift
-    bpf_set_siege_target   # refresh the survivor subtree before launching
-    exec systemd-run --slice="$SLICE" --scope --quiet -- "$@"
-    ;;
   *)
-    echo "usage: coldspot-stance <stance|limit|unlimit|allow|run> ..." >&2; exit 1 ;;
+    echo "usage: coldspot-stance <stance|limit|unlimit|stabilize|steer|bond|allow> ..." >&2
+    exit 1 ;;
 esac
