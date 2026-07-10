@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.1 — privilege hardening
+A hostile self-audit ("treat it like it's toxic") found a live, trivial local
+root escalation and several lesser exposures; this release closes all of them.
+coldspot's root daemon (`coldspotd`) is now the **only** privileged actor on the
+machine — the CLI never touches `sudo` again.
+- **No more passwordless root** — the installer's `%sudo NOPASSWD:
+  coldspot-stance, coldspot-bpf` grant is gone, and so is the root-exec `run`
+  primitive it made dangerous. Every privileged verb (`stance`, `steer`, `bond`,
+  `limit`, `stabilize`, `uncap`/`run`) is now a JSON command over the daemon's
+  control socket; the daemon (already root) performs the operation itself.
+  `coldspot run -- <cmd>` now runs your command as *you* and just asks the
+  daemon to warm it into `coldspot.slice` — no root exec in the CLI at all.
+- **Socket locked down** — `/run/coldspot/control.sock` is `root:coldspot 0660`
+  with an `SO_PEERCRED` check (root or the `coldspot` group only, default
+  deny); installing adds you to that group (log out/in once, or `newgrp
+  coldspot`, to pick it up).
+- **State is private again** — `status.json` and the JSON/SQLite stores
+  (SSIDs, both egress IPs, per-app usage, DNS-snooped hostnames) are now
+  `root:coldspot 0640`, not world-readable.
+- **Auto-update is opt-in and signed** — the daily updater no longer pipes an
+  unverified `main`-branch script to root bash; it's off unless you set
+  `auto_update = on` *and* enable the timer, and it verifies a minisign
+  signature against a pinned key before installing anything — no key, no
+  install (fails closed).
+- Smaller fixes: `bond`/`unbond` now save and restore `rp_filter` instead of
+  loosening it permanently, and never strand a non-wifi default route;
+  attacker-chosen SSIDs are sanitized before they reach a terminal; the
+  egress-IP probe only runs when `auto_bond` is on; the daemon is
+  systemd-sandboxed; the critical-service cgroup map is populated before
+  `cold` can ever throttle a packet.
+
 ## 0.4.0 — multi-radio
 Two or more radios become one smart link. coldspot senses each radio's health,
 keeps the primary on the best one, fails over automatically when it dies, and —

@@ -84,17 +84,24 @@ CLI and pill just read it.
 ## How it works
 Two halves behind one `status.json` seam:
 
-- **Meter** (`coldspotd`) — measures and attributes via a `cgroup/skb` eBPF core
-  (`bpf/coldspot.bpf.c`) that accounts per-app/per-destination and enforces the
-  verdict in one in-kernel pass; it falls back to `/proc/net/dev` + systemd IP
-  accounting when the core isn't loaded. It also keeps an hourly SQLite
-  time-series, watches the NetworkManager connection to auto-govern on roam, and
-  forecasts/flags anomalies. The core builds with only `clang` + `bpftool`
-  (vendored helpers, no libbpf-dev, no Go).
-- **Enforce** (`coldspot-stance`, root) — the only privileged piece: the **CAKE**
-  shaper (the smooth speed cap), the nft DSCP marking that gives warmed tasks the
-  priority tin, the eBPF `cold`/`siege` verdict + `critical` safe-list, and the
-  `coldspot.slice` cgroup that holds warmed tasks.
+- **Meter** (`coldspotd`, root) — measures and attributes via a `cgroup/skb`
+  eBPF core (`bpf/coldspot.bpf.c`) that accounts per-app/per-destination and
+  enforces the verdict in one in-kernel pass; it falls back to `/proc/net/dev`
+  + systemd IP accounting when the core isn't loaded. It also keeps an hourly
+  SQLite time-series, watches the NetworkManager connection to auto-govern on
+  roam, and forecasts/flags anomalies. The core builds with only `clang` +
+  `bpftool` (vendored helpers, no libbpf-dev, no Go).
+- **Enforce** (`coldspot-stance`) — the **CAKE** shaper (the smooth speed cap),
+  the nft DSCP marking that gives warmed tasks the priority tin, the eBPF
+  `cold`/`siege` verdict + `critical` safe-list, and the `coldspot.slice`
+  cgroup that holds warmed tasks.
+
+The daemon is the **only** privileged actor: it's the one thing running as
+root, and it drives `coldspot-stance` itself. The unprivileged CLI never uses
+`sudo` — it sends a JSON command over the daemon's control socket
+(`root:coldspot 0660`, `SO_PEERCRED`-gated to root or the `coldspot` group),
+and the daemon performs the operation. There is no passwordless-root grant
+anywhere in the install.
 
 Cold is a capped pipe with priority inside it: warmed tasks (`uncap`/`run`) + DNS
 ride CAKE's latency tin, bulk gets the leftover, connectivity-critical services
@@ -115,19 +122,32 @@ same install/update/uninstall shape as kast and phanspeed:
 curl -fsSL https://raw.githubusercontent.com/asuramaya/coldspot/main/install.sh | bash
 ```
 Or from a checkout: `make install` (or `./install.sh`). It installs the daemon +
-GNOME pill, builds the eBPF core from the local kernel BTF, and enables a daily
-auto-update timer.
+GNOME pill, builds the eBPF core from the local kernel BTF, creates a
+`coldspot` group and adds you to it (the CLI needs it to reach the daemon's
+control socket — **log out and back in once**, or `newgrp coldspot`, to pick
+it up), and installs the daily update timer **disabled** (see below).
 
 ```sh
 coldspot status              # the meter
-coldspot update [--check]    # pull newer releases (also checked daily)
+coldspot update [--check]    # pull a newer release now (manual; signature-verified)
 curl -fsSL https://raw.githubusercontent.com/asuramaya/coldspot/main/uninstall.sh | bash
 ```
 Per-app talkers in v0 need systemd IP accounting (the installer prints the
 one-liner). The v1 BPF core is built at install time — see `bpf/README.md`.
 
+Auto-update is **opt-in**: it's a root process running unattended, so it stays
+off until you set `auto_update = on` in `/etc/coldspot.conf` and enable the
+timer (`sudo systemctl enable --now coldspot-update.timer`). Either way — auto
+or manual — it refuses to install anything unless the release tarball carries
+a valid minisign signature against a pinned key; a bare version bump with no
+signature is rejected, not trusted.
+
 ## Status
-**v0.4.0 — multi-radio** turns two or more radios into one smart link: health
+**v0.4.1 — privilege hardening** followed a hostile self-audit: the daemon is
+now the only privileged actor on the machine (no `sudo`, no passwordless-root
+grant), the control socket and state files are locked to a `coldspot` group,
+and auto-update is opt-in and signature-verified. See the changelog for the
+full list. **v0.4.0 — multi-radio** turns two or more radios into one smart link: health
 ranking, hands-free failover (`steer`/auto-steer), and health-gated aggregation
 of independent uplinks (`coldspot bond`). **v0.3.0 — the link-aware axis** added
 layer-1/2 sensing and the network-policy pivot: `coldspot link`/`aim`/`stabilize`,
