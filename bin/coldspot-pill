@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# coldspot-pill — install/remove the GNOME pill for YOUR account. Never needs
+# root: the extension only touches your own $HOME and your own gnome-shell
+# session settings. `sudo ./install.sh` stages the extension source system-wide
+# (so any account on the box can self-serve); THIS is the per-account step —
+# run it as yourself, no sudo, whenever you want the pill on a given login.
+#
+#   coldspot-pill install   copy the extension into your home + enable it
+#   coldspot-pill remove    disable it and delete your copy
+set -euo pipefail
+
+EXT_UUID="coldspot@asuramaya"
+
+# Resolve the staged extension source: an explicit COLDSPOT_EXT_DIR always wins
+# (matches the COLDSPOT_BPF_DIR convention in coldspot-bpf); otherwise try the
+# repo layout (bin/../extension/$EXT_UUID, for `make pill` in a checkout) then
+# the installed layout, falling back to the installed default.
+if [[ -n "${COLDSPOT_EXT_DIR:-}" ]]; then
+  SRC_EXT="$COLDSPOT_EXT_DIR"
+else
+  _self="$(dirname "$(readlink -f "$0")")"
+  SRC_EXT="/usr/local/share/coldspot/extension/$EXT_UUID"
+  for _c in "$_self/../extension/$EXT_UUID" "$_self/../share/coldspot/extension/$EXT_UUID"; do
+    [[ -f "$_c/metadata.json" ]] && { SRC_EXT="$(cd "$_c" && pwd)"; break; }
+  done
+fi
+EXT_DIR="$HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
+
+if [[ $EUID -eq 0 ]]; then
+  echo "coldspot-pill: run this as yourself, not root — it only touches your own home." >&2
+  exit 1
+fi
+
+case "${1:-install}" in
+  install)
+    [[ -f "$SRC_EXT/metadata.json" ]] || {
+      echo "extension source not found at $SRC_EXT — run 'sudo ./install.sh' (or reinstall coldspot) first." >&2
+      exit 1
+    }
+    mkdir -p "$EXT_DIR"
+    install -m 0644 "$SRC_EXT/metadata.json" "$EXT_DIR/metadata.json"
+    install -m 0644 "$SRC_EXT/extension.js"  "$EXT_DIR/extension.js"
+    gnome-extensions enable "$EXT_UUID" 2>/dev/null || true
+    # `gnome-extensions enable` no-ops if the running shell hasn't scanned a
+    # freshly installed extension, so also write the enabled-extensions list
+    # directly — the shell honors it on the next login (Wayland can't
+    # hot-reload extensions).
+    cur="$(gsettings get org.gnome.shell enabled-extensions 2>/dev/null || echo '@as []')"
+    if grep -Fq "'$EXT_UUID'" <<<"$cur"; then
+      echo "pill installed and enabled."
+    else
+      if [[ "$cur" == "@as []" || "$cur" == "[]" ]]; then cur="['$EXT_UUID']"
+      else cur="${cur%]}, '$EXT_UUID']"; fi
+      gsettings set org.gnome.shell enabled-extensions "$cur" 2>/dev/null \
+        && echo "pill installed — log out/in once to load it (Wayland can't hot-reload extensions)." \
+        || echo "pill installed — enable manually: gnome-extensions enable $EXT_UUID"
+    fi
+    ;;
+  remove)
+    gnome-extensions disable "$EXT_UUID" 2>/dev/null || true
+    rm -rf "$EXT_DIR"
+    echo "pill removed from your account."
+    ;;
+  *)
+    echo "usage: coldspot-pill <install|remove>" >&2; exit 1 ;;
+esac

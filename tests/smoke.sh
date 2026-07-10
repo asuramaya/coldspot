@@ -7,7 +7,7 @@ export COLDSPOT_IFACE="lo"
 
 python3 -c "import ast,sys; ast.parse(open('$HERE/bin/coldspotd').read()); \
             ast.parse(open('$HERE/bin/coldspot').read()); print('py parse: ok')"
-bash -n "$HERE/bin/coldspot-stance" && echo "stance parse: ok"
+bash -n "$HERE/bin/coldspot-stance" && bash -n "$HERE/bin/coldspot-pill" && echo "stance parse: ok"
 bash -n "$HERE/install.sh" && bash -n "$HERE/uninstall.sh" && echo "install parse: ok"
 
 # run the daemon in a throwaway runtime dir as the current user

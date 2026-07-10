@@ -2,14 +2,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 asuramaya and coldspot contributors
 # coldspot uninstaller. Keeps /var/lib/coldspot usage history and /etc/coldspot.conf
-# unless --purge is given.
+# unless --purge is given. Root-only, and never self-elevates — see install.sh
+# for why. Doesn't touch any per-account GNOME pill install (it never guesses
+# whose home to reach into) — this script REMOVES the coldspot-pill binary
+# below, so run it first if you want the tidy version: `coldspot-pill remove`
+# as yourself, on each account that installed it. Missed that step? The
+# manual fallback always works regardless: rm -rf
+# ~/.local/share/gnome-shell/extensions/coldspot@asuramaya
 set -uo pipefail
 
 PREFIX="${PREFIX:-/usr/local}"
 BINDIR="$PREFIX/bin"
 SHAREDIR="$PREFIX/share/coldspot"
 UNITDIR="/etc/systemd/system"
-EXT_UUID="coldspot@asuramaya"
 PURGE=0
 
 for a in "$@"; do
@@ -21,20 +26,14 @@ for a in "$@"; do
 done
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Re-running with sudo..."
-  exec sudo -E bash "$0" "$@"
+  echo "coldspot uninstaller needs root — run: sudo ./uninstall.sh" >&2
+  exit 1
 fi
-# See install.sh: prefer `logname` (survives nested sudo hops) over $SUDO_USER
-# so a double-elevated invocation (e.g. `sudo make uninstall`) doesn't resolve
-# to root and remove the wrong user's GNOME pill.
-REAL_USER="$(logname 2>/dev/null || true)"
-if [[ -z "$REAL_USER" || "$REAL_USER" == "root" ]]; then
-  REAL_USER="${SUDO_USER:-$USER}"
-fi
-USER_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
-EXT_DIR="$USER_HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
 
 echo "== coldspot uninstaller =="
+echo "-- before this removes the coldspot-pill binary: if you want your GNOME"
+echo "   pill cleaned up too, run 'coldspot-pill remove' as yourself first"
+echo "   (or anytime later: rm -rf ~/.local/share/gnome-shell/extensions/coldspot@asuramaya)"
 
 echo "-- stopping services + timer"
 systemctl disable --now coldspotd.service coldspot-update.timer coldspot-update.service 2>/dev/null || true
@@ -44,13 +43,12 @@ echo "-- detaching bpf core + dropping siege table"
 nft delete table inet coldspot 2>/dev/null || true
 
 echo "-- removing files"
-for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update; do
+for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
   rm -f "$BINDIR/$b"
 done
 rm -f "$UNITDIR/coldspotd.service" "$UNITDIR/coldspot-update.service" "$UNITDIR/coldspot-update.timer"
 rm -f /etc/sudoers.d/coldspot
 rm -rf "$SHAREDIR"
-rm -rf "$EXT_DIR"
 systemctl daemon-reload
 
 if [[ "$PURGE" -eq 1 ]]; then

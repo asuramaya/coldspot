@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.2 — honest installer
+Caught live: `sudo make install` silently added *root*, not the operator, to
+the `coldspot` group and staged the GNOME pill under `/root` — because
+`install.sh` re-invoked itself under `sudo` if not already root, and a second,
+outer `sudo` made that self-elevation see itself as invoked by root. The fix
+isn't a smarter guess at who the "real" user is — it's removing the guessing
+entirely.
+- **`install.sh`/`uninstall.sh` never self-elevate.** Not root? They say so
+  plainly and stop — `sudo ./install.sh` (or `sudo make install`) is now the
+  *only* way to run them, so there is exactly one privilege hop, always typed
+  by a human, and no scenario where it can double up. A `curl | bash` without
+  `sudo` fails immediately, before anything is even downloaded.
+- **The GNOME pill is no longer installed by the root script at all.** It only
+  ever needed to write into your own `$HOME` and flip your own gnome-shell
+  settings — neither needs root. `sudo ./install.sh` now just stages the
+  extension source system-wide; a new `coldspot-pill install` (run as
+  yourself, never sudo) does the per-account part. Works independently for
+  every account on a shared machine, and removes the `sudo -u`/manually-wired
+  `DBUS_SESSION_BUS_ADDRESS` impersonation that used to be needed to write
+  into another user's session as root.
+- `make install`/`make pill`/`make pill-remove` wired up to match;
+  `tools/deploy.sh` (the fast-iteration path) stages the pill source too.
+
 ## 0.4.1 — privilege hardening
 A hostile self-audit ("treat it like it's toxic") found a live, trivial local
 root escalation and several lesser exposures; this release closes all of them.

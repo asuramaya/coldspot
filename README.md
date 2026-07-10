@@ -116,21 +116,29 @@ and blocks but has no budget; Android has the framing but isn't Linux. coldspot
 is the union, in one pill. The novelty is the integration, not the primitives.
 
 ## Install
-One line (verified release tarball, falls back to main with a warning) — the
-same install/update/uninstall shape as kast and phanspeed:
+Two steps, deliberately — one needs root, one never does:
 ```sh
-curl -fsSL https://raw.githubusercontent.com/asuramaya/coldspot/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/asuramaya/coldspot/main/install.sh | sudo bash
+coldspot-pill install    # as yourself, no sudo — adds the GNOME pill to YOUR account
 ```
-Or from a checkout: `make install` (or `./install.sh`). It installs the daemon +
-GNOME pill, builds the eBPF core from the local kernel BTF, creates a
-`coldspot` group and adds you to it (the CLI needs it to reach the daemon's
-control socket — **log out and back in once**, or `newgrp coldspot`, to pick
-it up), and installs the daily update timer **disabled** (see below).
+`install.sh` is root-only and says so plainly if you forget `sudo` — it never
+re-invokes itself, so there's exactly one privilege hop, always, and no
+ambiguity about which account it's acting on. It installs the daemon + root
+helpers, builds the eBPF core from the local kernel BTF, creates a `coldspot`
+group and adds you to it (the CLI needs it to reach the daemon's control
+socket — **log out and back in once**, or `newgrp coldspot`, to pick it up),
+and installs the daily update timer **disabled** (see below). It does *not*
+touch the GNOME pill — that only ever needed your own `$HOME` and your own
+gnome-shell session, never root, so `coldspot-pill install` is its own
+per-account step (handy on a shared box: every account runs it for itself).
+
+Or from a checkout: `sudo make install`, then `make pill`.
 
 ```sh
 coldspot status              # the meter
 coldspot update [--check]    # pull a newer release now (manual; signature-verified)
-curl -fsSL https://raw.githubusercontent.com/asuramaya/coldspot/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/asuramaya/coldspot/main/uninstall.sh | sudo bash
+coldspot-pill remove         # as yourself — the uninstaller doesn't touch your home
 ```
 Per-app talkers in v0 need systemd IP accounting (the installer prints the
 one-liner). The v1 BPF core is built at install time — see `bpf/README.md`.
@@ -143,7 +151,12 @@ a valid minisign signature against a pinned key; a bare version bump with no
 signature is rejected, not trusted.
 
 ## Status
-**v0.4.1 — privilege hardening** followed a hostile self-audit: the daemon is
+**v0.4.2 — honest installer** removed the last piece of self-elevating-script
+magic: `install.sh`/`uninstall.sh` never re-invoke themselves under `sudo`
+(they just say so and stop if you forget it), and the GNOME pill — which
+never needed root — is its own per-account step (`coldspot-pill`). One
+sudo hop, always typed by a human, never nested. **v0.4.1 — privilege
+hardening** followed a hostile self-audit: the daemon is
 now the only privileged actor on the machine (no `sudo`, no passwordless-root
 grant), the control socket and state files are locked to a `coldspot` group,
 and auto-update is opt-in and signature-verified. See the changelog for the

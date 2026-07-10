@@ -1,28 +1,36 @@
 # coldspot — common tasks. Run `make help` for the list.
 EXT := extension/coldspot@asuramaya
 
-.PHONY: help install deploy uninstall check lint bpf smoke clean
+.PHONY: help install pill deploy uninstall check lint bpf smoke clean
 
 help:
 	@echo "coldspot targets:"
-	@echo "  make install    install daemon + pill + auto-update timer (sudo)"
+	@echo "  make install    install daemon + auto-update timer (needs sudo)"
+	@echo "  make pill       add the GNOME pill to YOUR account (no sudo, run after install)"
 	@echo "  make deploy     smoke-test, then push bins+bpf+daemon and reload (sudo)"
-	@echo "  make uninstall  remove everything (sudo)"
+	@echo "  make uninstall  remove everything except your GNOME pill (sudo; see make pill-remove)"
 	@echo "  make check      run all static checks (CI-equivalent)"
 	@echo "  make lint       ruff + shellcheck"
 	@echo "  make bpf        build the eBPF core from local kernel BTF"
 	@echo "  make smoke      run the no-root smoke test"
 	@echo "  make clean      remove build artifacts"
 
-# install.sh/uninstall.sh self-elevate (they exec themselves under sudo if not
-# already root) — don't prefix sudo here too. `sudo make install` would make
-# THIS sudo call see itself as invoked by a process already running as root, so
-# the script's SUDO_USER resolves to "root" instead of you: the real-user
-# extension install and group membership land on root, not your account. Let
-# the script do its own single sudo hop; `make install`/`sudo make install`
-# both work correctly this way.
+# install.sh is root-only and never self-elevates (see its header comment for
+# why) — it fails with a clear message if you forget sudo, rather than quietly
+# re-invoking itself. So `make install` needs YOU to type sudo, same as the
+# script directly: `sudo make install` / `sudo ./install.sh` are equivalent.
 install:
 	./install.sh
+
+# The GNOME pill never needed root — it only writes into your own $HOME and
+# your own gnome-shell session. Deliberately separate from `install`: run this
+# as yourself, NOT with sudo, any time after `make install` has staged the
+# extension source. Works per-account, so every user on a shared box self-serves.
+pill:
+	COLDSPOT_EXT_DIR="$(EXT)" ./bin/coldspot-pill install
+
+pill-remove:
+	./bin/coldspot-pill remove
 
 # Fast local iteration: smoke FIRST, then atomically push the moving parts into
 # their installed locations and reload (loader before object, so new programs
@@ -35,11 +43,11 @@ uninstall:
 
 lint:
 	-ruff check bin/coldspot bin/coldspotd 2>/dev/null || true
-	shellcheck install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update tools/deploy.sh
+	shellcheck install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh
 
 check: lint
 	python3 -m py_compile bin/coldspotd bin/coldspot
-	bash -n install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update tools/deploy.sh
+	bash -n install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh
 	node --check $(EXT)/extension.js
 	python3 -c "import json; json.load(open('$(EXT)/metadata.json'))"
 	python3 tests/test_units.py

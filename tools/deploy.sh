@@ -42,11 +42,18 @@ core_loaded=0; [[ -e "$PIN/usage" ]] && core_loaded=1
 #    loader before the reload below is the whole point: stale loader = the new
 #    programs in the object never get attached.
 echo "== bins -> $BINDIR =="
-for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update; do
+for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
   install -m 0755 -o root -g root "$SRC/bin/$b" "$BINDIR/$b"
 done
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/VERSION" "$SHAREDIR/VERSION"
+
+# GNOME pill source, staged the same way as bpf sources below — never installed
+# into an account from here; run `coldspot-pill install` (as yourself) for that.
+install -Dm644 "$SRC/extension/coldspot@asuramaya/metadata.json" \
+  "$SHAREDIR/extension/coldspot@asuramaya/metadata.json"
+install -Dm644 "$SRC/extension/coldspot@asuramaya/extension.js" \
+  "$SHAREDIR/extension/coldspot@asuramaya/extension.js"
 
 # 3. BPF sources + rebuild the object into the installed share (local BTF only).
 echo "== bpf core -> $SHAREDIR/bpf =="

@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 asuramaya and coldspot contributors
-# coldspot installer — metered-link data saver: daemon + GNOME pill.
-# Standardized with kast/phanspeed: verified `curl | bash` bootstrap, sudo
-# re-exec, real-user extension install, version marker, daily auto-update timer.
+# coldspot installer — metered-link data saver: daemon, root helpers, systemd
+# units. Root-only, and ONLY root-only: this script never re-execs itself under
+# sudo (a script that quietly escalates itself is exactly what made a nested
+# `sudo make install` misattribute the human user to "root" — see git log). If
+# you're not root, it says so and stops; you always type sudo yourself, exactly
+# once, so there is no ambiguity about who actually ran it. The GNOME pill is a
+# SEPARATE, per-account, non-root step — see `coldspot-pill` — since installing
+# a file into your own home never needed root in the first place.
 set -euo pipefail
 
 REPO="asuramaya/coldspot"
@@ -14,9 +19,27 @@ SHAREDIR="$PREFIX/share/coldspot"
 UNITDIR="/etc/systemd/system"
 EXT_UUID="coldspot@asuramaya"
 
+# ---- root, checked FIRST, before any download --------------------------
+# Fail fast and plainly rather than self-elevating: `curl | bash` without sudo
+# gets told to add sudo BEFORE anything is fetched, not after a wasted download.
+if [[ $EUID -ne 0 ]]; then
+  cat >&2 <<'EOF'
+coldspot needs root to install (binaries, systemd units, the bpf core). Re-run
+with sudo:
+
+  curl -fsSL https://raw.githubusercontent.com/asuramaya/coldspot/main/install.sh | sudo bash
+
+or from a checkout:
+
+  sudo ./install.sh        (or: sudo make install)
+EOF
+  exit 1
+fi
+
 # ---- verified release bootstrap (kast-style) -------------------------------
-# When run without its sibling files (i.e. `curl -fsSL .../install.sh | bash`),
-# fetch the published, checksum-verified release tarball and re-exec from it.
+# When run without its sibling files (i.e. `curl -fsSL .../install.sh | sudo
+# bash`), fetch the published, checksum-verified release tarball and re-exec
+# from it. Runs as root (we already checked above), same as everything else.
 verify_release_tarball() {
   local tarball="$1" want got
   command -v sha256sum >/dev/null 2>&1 || {
@@ -52,32 +75,20 @@ bootstrap_from_release() {
 
 [[ -f "$SRC/bin/coldspotd" ]] || bootstrap_from_release "$@"
 
-# ---- privilege + real-user resolution (phanspeed-style) --------------------
-if [[ $EUID -ne 0 ]]; then
-  echo "Re-running with sudo..."
-  exec sudo -E bash "$0" "$@"
-fi
-# Prefer `logname` (reads the kernel's audit loginuid, set once at login and
-# unaffected by any number of nested sudo/su hops) over $SUDO_USER, which only
-# reflects the immediate sudo call — if something upstream already elevated
-# (e.g. `sudo make install`, where make's own `sudo ./install.sh` becomes a
-# second hop), SUDO_USER resolves to "root" and the real-user steps below
-# (group membership, GNOME pill) land on root instead of the human. Fall back
-# to SUDO_USER/USER only if logname can't tell us anything.
-REAL_USER="$(logname 2>/dev/null || true)"
-if [[ -z "$REAL_USER" || "$REAL_USER" == "root" ]]; then
-  REAL_USER="${SUDO_USER:-$USER}"
-fi
-USER_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
-USER_UID="$(id -u "$REAL_USER")"
-EXT_DIR="$USER_HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
+# We already know we're root (checked at the top, before any of the above ran).
+# The ONLY thing that still needs to know about a human account is the group
+# membership grant below — and since this script never sudos itself, $SUDO_USER
+# is reliable here: it's set by whichever single sudo call the human actually
+# typed. If it's unset (e.g. you're in a plain root shell, not via sudo), we
+# say so plainly rather than guessing.
+REAL_USER="${SUDO_USER:-}"
 VERSION="$(tr -d '[:space:]' < "$SRC/VERSION" 2>/dev/null || echo unknown)"
 
 echo "== coldspot ${VERSION} installer =="
 
 # 1. binaries + version marker
 echo "-- binaries -> $BINDIR"
-for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update; do
+for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
   install -m 0755 -o root -g root "$SRC/bin/$b" "$BINDIR/$b"
 done
 install -d -m 0755 "$SHAREDIR"
@@ -108,7 +119,13 @@ echo "-- coldspot group + membership"
 # local-root vector. Remove it if a prior install left it behind.
 rm -f /etc/sudoers.d/coldspot
 getent group coldspot >/dev/null || groupadd -r coldspot
-usermod -aG coldspot "$REAL_USER" || true
+if [[ -n "$REAL_USER" ]]; then
+  usermod -aG coldspot "$REAL_USER" || true
+else
+  echo "   couldn't tell which account to add (no \$SUDO_USER — running from a" \
+       "root shell rather than sudo?)"
+  echo "   add yourself manually:  sudo usermod -aG coldspot <your-username>"
+fi
 
 # 5. systemd: meter daemon (+ updater units, installed but NOT enabled)
 echo "-- systemd units + enabling"
@@ -131,32 +148,28 @@ fi
 # we install the timer but do NOT enable it. Turn it on deliberately (see the
 # post-install note) after setting `auto_update = on` in /etc/coldspot.conf.
 
-# 6. GNOME pill into the real user's home
-echo "-- GNOME pill -> $EXT_DIR"
-sudo -u "$REAL_USER" mkdir -p "$EXT_DIR"
-install -m 0644 -o "$REAL_USER" -g "$REAL_USER" "$SRC/extension/$EXT_UUID/metadata.json" "$EXT_DIR/metadata.json"
-install -m 0644 -o "$REAL_USER" -g "$REAL_USER" "$SRC/extension/$EXT_UUID/extension.js"  "$EXT_DIR/extension.js"
-runu() { sudo -u "$REAL_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_UID/bus" "$@"; }
-runu gnome-extensions enable "$EXT_UUID" 2>/dev/null || true
-# `gnome-extensions enable` no-ops if the running shell hasn't scanned a freshly
-# installed extension, so also write the enabled-extensions list directly — the
-# shell honors it on the next login (Wayland can't hot-reload extensions).
-cur="$(runu gsettings get org.gnome.shell enabled-extensions 2>/dev/null || echo '@as []')"
-if grep -Fq "'$EXT_UUID'" <<<"$cur"; then
-  echo "   enabled"
-else
-  if [[ "$cur" == "@as []" || "$cur" == "[]" ]]; then cur="['$EXT_UUID']"
-  else cur="${cur%]}, '$EXT_UUID']"; fi
-  runu gsettings set org.gnome.shell enabled-extensions "$cur" 2>/dev/null \
-    && echo "   queued for next login" \
-    || echo "   (enable manually: gnome-extensions enable $EXT_UUID)"
-fi
+# 6. GNOME pill SOURCE, staged system-wide (like the bpf sources above) — NOT
+# installed into any account. Writing into a user's $HOME never needed root, so
+# it isn't done here; each account runs `coldspot-pill install` for itself
+# (works for every user on a shared box, not just whoever ran this installer).
+echo "-- GNOME pill source -> $SHAREDIR/extension/$EXT_UUID"
+install -Dm644 "$SRC/extension/$EXT_UUID/metadata.json" "$SHAREDIR/extension/$EXT_UUID/metadata.json"
+install -Dm644 "$SRC/extension/$EXT_UUID/extension.js"  "$SHAREDIR/extension/$EXT_UUID/extension.js"
 
 # 7. verify perms
 echo "-- verifying"
 verify() { local got; got="$(stat -c '%a' "$1" 2>/dev/null || echo '?')"
   [[ "$got" == "$2" ]] && echo "   OK   $1 ($got)" || echo "   WARN $1 is $got, expected $2"; }
 verify "$BINDIR/coldspotd" 755
+
+if [[ -n "$REAL_USER" ]]; then
+  GROUP_NOTE=">>> $REAL_USER was added to the 'coldspot' group, which gates the privileged
+    verbs. LOG OUT AND BACK IN (or run 'newgrp coldspot' in a shell) for the
+    membership to take effect before the CLI can drive them. <<<"
+else
+  GROUP_NOTE=">>> no account was added to the 'coldspot' group (see the warning above) —
+    add yours with: sudo usermod -aG coldspot <your-username>, then log out/in. <<<"
+fi
 
 cat <<EOF
 
@@ -166,11 +179,10 @@ cat <<EOF
   coldspot siege             only the active task on the wire
   coldspot flows             per-destination breakdown (needs the bpf core)
   coldspot update [--check]  pull newer releases (opt-in daily timer, see below)
-  Remove:  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/uninstall.sh | bash
+  coldspot-pill install      add the GNOME pill to YOUR account (as yourself, no sudo)
+  Remove:  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/uninstall.sh | sudo bash
 
->>> $REAL_USER was added to the 'coldspot' group, which gates the privileged
-    verbs. LOG OUT AND BACK IN (or run 'newgrp coldspot' in a shell) for the
-    membership to take effect before the CLI can drive them. <<<
+$GROUP_NOTE
 
 daily auto-update is OFF by default (it runs code as root unattended). To opt in:
   set 'auto_update = on' in /etc/coldspot.conf, then:
@@ -179,5 +191,6 @@ daily auto-update is OFF by default (it runs code as root unattended). To opt in
 per-app talkers without the bpf core need systemd accounting:
   sudo sed -i 's/^#\\?DefaultIPAccounting=.*/DefaultIPAccounting=yes/' /etc/systemd/system.conf && sudo systemctl daemon-reexec
 
->>> log out/in once to load the GNOME pill (Wayland can't hot-reload extensions). <<<
+>>> the GNOME pill is per-account now — run 'coldspot-pill install' as
+    yourself (every user on this box can do the same) <<<
 EOF
