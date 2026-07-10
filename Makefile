@@ -14,8 +14,15 @@ help:
 	@echo "  make smoke      run the no-root smoke test"
 	@echo "  make clean      remove build artifacts"
 
+# install.sh/uninstall.sh self-elevate (they exec themselves under sudo if not
+# already root) — don't prefix sudo here too. `sudo make install` would make
+# THIS sudo call see itself as invoked by a process already running as root, so
+# the script's SUDO_USER resolves to "root" instead of you: the real-user
+# extension install and group membership land on root, not your account. Let
+# the script do its own single sudo hop; `make install`/`sudo make install`
+# both work correctly this way.
 install:
-	sudo ./install.sh
+	./install.sh
 
 # Fast local iteration: smoke FIRST, then atomically push the moving parts into
 # their installed locations and reload (loader before object, so new programs
@@ -24,7 +31,7 @@ deploy:
 	bash tools/deploy.sh
 
 uninstall:
-	sudo ./uninstall.sh
+	./uninstall.sh
 
 lint:
 	-ruff check bin/coldspot bin/coldspotd 2>/dev/null || true

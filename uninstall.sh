@@ -24,7 +24,13 @@ if [[ $EUID -ne 0 ]]; then
   echo "Re-running with sudo..."
   exec sudo -E bash "$0" "$@"
 fi
-REAL_USER="${SUDO_USER:-$USER}"
+# See install.sh: prefer `logname` (survives nested sudo hops) over $SUDO_USER
+# so a double-elevated invocation (e.g. `sudo make uninstall`) doesn't resolve
+# to root and remove the wrong user's GNOME pill.
+REAL_USER="$(logname 2>/dev/null || true)"
+if [[ -z "$REAL_USER" || "$REAL_USER" == "root" ]]; then
+  REAL_USER="${SUDO_USER:-$USER}"
+fi
 USER_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
 EXT_DIR="$USER_HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
 

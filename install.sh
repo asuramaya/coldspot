@@ -57,7 +57,17 @@ if [[ $EUID -ne 0 ]]; then
   echo "Re-running with sudo..."
   exec sudo -E bash "$0" "$@"
 fi
-REAL_USER="${SUDO_USER:-$USER}"
+# Prefer `logname` (reads the kernel's audit loginuid, set once at login and
+# unaffected by any number of nested sudo/su hops) over $SUDO_USER, which only
+# reflects the immediate sudo call — if something upstream already elevated
+# (e.g. `sudo make install`, where make's own `sudo ./install.sh` becomes a
+# second hop), SUDO_USER resolves to "root" and the real-user steps below
+# (group membership, GNOME pill) land on root instead of the human. Fall back
+# to SUDO_USER/USER only if logname can't tell us anything.
+REAL_USER="$(logname 2>/dev/null || true)"
+if [[ -z "$REAL_USER" || "$REAL_USER" == "root" ]]; then
+  REAL_USER="${SUDO_USER:-$USER}"
+fi
 USER_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
 USER_UID="$(id -u "$REAL_USER")"
 EXT_DIR="$USER_HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
@@ -106,7 +116,17 @@ install -m 0644 "$SRC/systemd/system/coldspotd.service"       "$UNITDIR/coldspot
 install -m 0644 "$SRC/systemd/system/coldspot-update.service" "$UNITDIR/coldspot-update.service"
 install -m 0644 "$SRC/systemd/system/coldspot-update.timer"   "$UNITDIR/coldspot-update.timer"
 systemctl daemon-reload
-systemctl enable --now coldspotd.service
+systemctl enable coldspotd.service
+# `enable --now` on an ALREADY-active unit is a no-op start — it would leave the
+# old binary running in memory even though we just overwrote it on disk. Detect
+# a re-install and explicitly restart so the new daemon (and any unit-file
+# changes, e.g. hardening directives) actually take effect.
+if systemctl is-active --quiet coldspotd.service; then
+  echo "-- restarting coldspotd to load the updated daemon"
+  systemctl restart coldspotd.service
+else
+  systemctl start coldspotd.service
+fi
 # The daily updater runs code as root unattended, so it is OPT-IN for security:
 # we install the timer but do NOT enable it. Turn it on deliberately (see the
 # post-install note) after setting `auto_update = on` in /etc/coldspot.conf.
