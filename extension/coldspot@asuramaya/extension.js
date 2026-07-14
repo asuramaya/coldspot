@@ -22,6 +22,12 @@ const STANCES = [['open', '○'], ['lean', '◐'], ['cold', '❄'], ['siege', '�
 const POLICIES = [['open', '○'], ['cold', '❄'], ['stabilize', '≈']];
 const LIMITS = [['1mbps', '1 Mbit/s'], ['500kbps', '500 kbit/s'], ['off', 'no cap']];
 
+// shared family palette (FAMILY.md doctrine #12) — same five colors as every
+// other pill in the kast/phanspeed/coldspot/ByeByte/RAMstein family.
+const PALETTE = { ACCENT: '#b9acff', DIM: '#9aa0a6', GOOD: '#4caf50',
+                   WARN: '#ffbb33', BAD: '#ff5b5b' };
+const VERSION_FILE = '/usr/local/share/coldspot/VERSION';
+
 function humanRate(bps) {
     let b = bps || 0;
     for (const u of ['B', 'K', 'M']) {
@@ -112,6 +118,13 @@ class Pill extends PanelMenu.Button {
             policy.menu.addMenuItem(it);
         }
         this.menu.addMenuItem(policy);
+
+        // history — per-connection today/month totals (`coldspot history`,
+        // previously CLI-only: the daemon already tracks and publishes this,
+        // the pill just never surfaced it).
+        const history = new PopupMenu.PopupSubMenuMenuItem('History (per network)');
+        this._historyItem = history;
+        this.menu.addMenuItem(history);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // talkers — tap one to warm it (full speed / priority under cold)
@@ -119,6 +132,13 @@ class Pill extends PanelMenu.Button {
         this.menu.addMenuItem(this._talkHint);
         this._talkers = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._talkers);
+
+        // ledger — today's PERSISTED per-app totals (`coldspot ledger`),
+        // distinct from the live talkers above: survives roams/reloads, so an
+        // app that finished an hour ago still shows its share of today.
+        const ledger = new PopupMenu.PopupSubMenuMenuItem("Today's ledger (all apps)");
+        this._ledgerItem = ledger;
+        this.menu.addMenuItem(ledger);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // quick speed cap
@@ -138,6 +158,14 @@ class Pill extends PanelMenu.Button {
         reset.connect('activate', () => this._run([COLDSPOT, 'reset']));
         this.menu.addMenuItem(reset);
 
+        // dim version footer (shared family idiom) — read once, doesn't change
+        // at runtime, so no need to touch this again in _tick().
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._footer = new PopupMenu.PopupMenuItem(`coldspot ${this._readVersion()}`,
+            { reactive: false });
+        this._footer.label.style = `color:${PALETTE.DIM}; font-size:0.85em;`;
+        this.menu.addMenuItem(this._footer);
+
         // notification de-dup state
         this._prevGoverned = false;
         this._prevStabilized = false;
@@ -152,6 +180,14 @@ class Pill extends PanelMenu.Button {
             this._tick();
             return GLib.SOURCE_CONTINUE;
         });
+    }
+
+    _readVersion() {
+        try {
+            const [ok, bytes] = GLib.file_get_contents(VERSION_FILE);
+            if (ok) return new TextDecoder().decode(bytes).trim();
+        } catch (_e) { /* fall through */ }
+        return 'dev';
     }
 
     _run(argv) {
@@ -247,9 +283,9 @@ class Pill extends PanelMenu.Button {
         // panel pill: stance glyph + MB; heats up as the budget fills, blue when cold
         this._label.text = limit ? `${glyph} ${used}/${limit} MB` : `${glyph} ${used} MB`;
         const state = st.budget?.state;
-        this._label.style = state === 'over' ? 'color:#ff5555;'
-            : state === 'warn' ? 'color:#ffb86c;'
-            : (stance === 'cold') ? 'color:#8be9fd;' : '';
+        this._label.style = state === 'over' ? `color:${PALETTE.BAD};`
+            : state === 'warn' ? `color:${PALETTE.WARN};`
+            : (stance === 'cold') ? `color:${PALETTE.ACCENT};` : '';
 
         const r = st.rate_bps || {};
         const conn = st.connection || st.iface || '?';
@@ -310,6 +346,35 @@ class Pill extends PanelMenu.Button {
         for (const [name] of POLICIES) {
             this._policyItems[name].setOrnament(
                 name === (st.policy || 'open') ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
+        }
+
+        // history — per-connection today/month, persisted (`coldspot history`)
+        this._historyItem.menu.removeAll();
+        const histEntries = Object.entries(st.history || {})
+            .sort((a, b) => b[1].today_mb - a[1].today_mb);
+        if (histEntries.length) {
+            for (const [hconn, h] of histEntries.slice(0, 8)) {
+                const met = h.metered ? ' ·metered' : '';
+                this._historyItem.menu.addMenuItem(new PopupMenu.PopupMenuItem(
+                    `${h.today_mb} MB today (↓${h.today_rx_mb}/↑${h.today_tx_mb}) · ` +
+                    `${h.month_mb} MB/mo${met}  —  ${hconn}`, { reactive: false }));
+            }
+        } else {
+            this._historyItem.menu.addMenuItem(
+                new PopupMenu.PopupMenuItem('no history yet', { reactive: false }));
+        }
+
+        // ledger — today's persisted per-app totals (`coldspot ledger`)
+        this._ledgerItem.menu.removeAll();
+        const led = st.ledger || [];
+        if (led.length) {
+            for (const e of led.slice(0, 10)) {
+                this._ledgerItem.menu.addMenuItem(new PopupMenu.PopupMenuItem(
+                    `↑${e.tx_mb} ↓${e.rx_mb} MB   ${e.name}`, { reactive: false }));
+            }
+        } else {
+            this._ledgerItem.menu.addMenuItem(
+                new PopupMenu.PopupMenuItem('no ledger data yet', { reactive: false }));
         }
 
         // multi-radio: link health board + steer/bond — only worth a whole
