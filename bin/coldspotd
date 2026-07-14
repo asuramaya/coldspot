@@ -33,6 +33,8 @@ LEDGER_DB = f"{STATE}/ledger.json"    # per-day per-app bytes (survives reloads)
 TS_DB = f"{STATE}/coldspot.db"        # hourly (connection, app) time-series
 POLICY_DB = f"{STATE}/policy.json"    # per-network policy — coldspot's own truth
 
+_CS_GID = None   # set in main() when root+the `coldspot` group exist; see atomic_write()
+
 # What coldspot decides to do on a network. This is coldspot's authority: the NM
 # `metered` flag is demoted to just a seed for a NEW network, not the master.
 # scarce/economic -> cold; bad/quality -> stabilize; they're independent axes.
@@ -1282,6 +1284,18 @@ def atomic_write(path, obj):
         os.chmod(path, 0o640)
     except OSError:
         pass
+    # The tmp file is created fresh each call, so it gets THIS PROCESS's group
+    # (root), not the parent directory's — directory setgid would normally fix
+    # that, but coldspotd.service's own RestrictSUIDSGID=yes silently blocks the
+    # setgid chmod on RUN/STATE below, so it never takes. Re-group explicitly
+    # instead of depending on inheritance: this is what actually keeps the CLI
+    # and GNOME pill (running as the user, in the `coldspot` group) able to
+    # read status.json et al.
+    if _CS_GID is not None:
+        try:
+            os.chown(path, -1, _CS_GID)
+        except OSError:
+            pass
 
 
 # --- privileged control socket: the daemon is the ONLY privileged actor -------
@@ -1424,15 +1438,18 @@ def main():
         except KeyError:
             cs_gid = None
         if cs_gid is not None:
+            global _CS_GID
+            _CS_GID = cs_gid   # atomic_write() re-groups every state file it writes
             os.chown(SOCK, 0, cs_gid)
             os.chmod(SOCK, 0o660)
-            # setgid (02750) so files written here inherit group `coldspot` —
-            # the CLI + GNOME pill (run as the user, in that group) can then read
-            # status.json / the time-series, while the world still cannot.
+            # Group the dirs so the user can traverse them. NOT setgid: the
+            # daemon's own RestrictSUIDSGID=yes (systemd) blocks any chmod that
+            # sets S_ISGID, so a 02750 here would silently no-op anyway — group
+            # inheritance for new files is handled explicitly in atomic_write().
             for dpath in (RUN, STATE):
                 try:
                     os.chown(dpath, 0, cs_gid)
-                    os.chmod(dpath, 0o2750)
+                    os.chmod(dpath, 0o750)
                 except OSError:
                     pass
             # files created BEFORE the setgid took effect (the sqlite DB opened
