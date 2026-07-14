@@ -32,8 +32,14 @@ REL_BASE="https://github.com/${REPO}/releases/latest/download"
 # project's real minisign public key (the base64 string on the line after the
 # "untrusted comment:" line of minisign.pub, e.g. "RWQ...") before auto-update
 # can ever install anything. While it is empty, signature verification cannot
-# succeed, so the updater fails closed and auto-update stays disabled. The
-# matching secret key is provisioned in CI (see .github/workflows/release.yml).
+# succeed, so the updater fails closed and auto-update stays disabled.
+#
+# The matching SECRET key must NEVER be provisioned in CI: signing exists so
+# that a compromised GitHub account (or CI itself) is not the trust root. CI
+# only builds and publishes the deterministic `git archive` tarball; the
+# operator signs those exact published bytes BY HAND, offline, with a key that
+# never touches this repo's secrets, and uploads the resulting signature to
+# the release afterward (see .github/workflows/release.yml).
 COLDSPOT_MINISIGN_PUBKEY=""
 
 installed_version() {

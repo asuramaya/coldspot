@@ -31,42 +31,22 @@ jobs:
           echo "--- contents ---"
           tar -tzf coldspot.tar.gz
 
-      - name: Sign release tarball (minisign)
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
-        run: |
-          # coldspot-update trusts a detached minisign signature verified against
-          # a PINNED public key and refuses to install without it. Sign the
-          # release here so auto-update can authenticate it. Guarded: if the
-          # secret key isn't provisioned yet, warn and skip (leave the release
-          # unsigned) instead of failing the build.
-          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
-            echo "::warning::MINISIGN_SECRET_KEY not set — skipping signing; release will be UNSIGNED and auto-update will refuse it."
-            exit 0
-          fi
-          sudo apt-get update -qq && sudo apt-get install -y minisign
-          keyfile="$(mktemp)"
-          printf '%s\n' "${MINISIGN_SECRET_KEY}" > "${keyfile}"
-          # Password piped on stdin (empty line is fine for an unencrypted key);
-          # -Sm writes the detached signature to coldspot.tar.gz.minisig.
-          printf '%s\n' "${MINISIGN_PASSWORD:-}" | minisign -Sm coldspot.tar.gz -s "${keyfile}"
-          rm -f "${keyfile}"
-          echo "--- signature ---"
-          ls -l coldspot.tar.gz.minisig
+      # No signing step here, deliberately: coldspot-update trusts a detached
+      # signature verified against a key pinned INSIDE the client, precisely so
+      # that this CI (or the GitHub account behind it) is not the trust root.
+      # A secret key living in Actions secrets would let anyone who compromises
+      # the account or the workflow sign whatever they just pushed — that
+      # defeats the entire scheme. The release ships UNSIGNED from here; the
+      # operator signs these exact published bytes BY HAND, offline, and runs
+      # `gh release upload <tag> coldspot.tar.gz.minisig --clobber` afterward.
 
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Ship the signature alongside the tarball + sha256 when signing ran;
-          # if it was skipped (no secret yet), release the unsigned assets.
+          # Unsigned assets only. auto-update fails closed until the operator
+          # uploads a detached signature out of band (see comment above).
           assets=(coldspot.tar.gz coldspot.tar.gz.sha256)
-          if [ -f coldspot.tar.gz.minisig ]; then
-            assets+=(coldspot.tar.gz.minisig)
-          else
-            echo "::warning::coldspot.tar.gz.minisig missing — releasing UNSIGNED assets."
-          fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
           else

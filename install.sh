@@ -55,18 +55,25 @@ verify_release_tarball() {
 bootstrap_from_release() {
   command -v curl >/dev/null 2>&1 || { echo "curl is required for remote install" >&2; exit 1; }
   command -v tar  >/dev/null 2>&1 || { echo "tar is required for remote install" >&2; exit 1; }
-  local tmp tarball inner from_release=1
+  local tmp tarball inner
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
   tarball="$tmp/coldspot.tar.gz"
   echo "== fetching latest coldspot release =="
   if ! curl -fsSL "https://github.com/${REPO}/releases/latest/download/coldspot.tar.gz" -o "$tarball"; then
-    from_release=0
-    echo "  WARNING: no published release asset — falling back to the UNREVIEWED main branch." >&2
-    [[ "${COLDSPOT_NO_UNSTABLE:-0}" == "1" ]] && { echo "Refusing main-branch fallback (COLDSPOT_NO_UNSTABLE=1)." >&2; exit 1; }
-    curl -fsSL "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" -o "$tarball" \
-      || { echo "download failed." >&2; exit 1; }
+    # No unreviewed-`main` fallback: this runs as root, and falling back to a
+    # mutable branch on ANY fetch hiccup (network blip, or an attacker simply
+    # interfering with the release-asset request) would turn a transient
+    # failure into an unverified root install. Fail closed instead.
+    cat >&2 <<EOF
+could not fetch a published release tarball for ${REPO}. This installer
+never falls back to the unreviewed main branch as root — clone the repo and
+run install.sh from the checkout instead:
+
+  git clone https://github.com/${REPO} && cd coldspot && sudo ./install.sh
+EOF
+    exit 1
   fi
-  [[ "$from_release" -eq 1 ]] && verify_release_tarball "$tarball"
+  verify_release_tarball "$tarball"
   tar -xzf "$tarball" -C "$tmp"
   inner="$(find "$tmp" -maxdepth 2 -name install.sh -type f | head -n1)"
   [[ -n "$inner" ]] || { echo "install.sh not found in archive" >&2; exit 1; }
