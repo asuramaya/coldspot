@@ -1461,6 +1461,10 @@ def main():
         # 1) non-blocking control drain
         try:
             conn, _ = srv.accept()
+            # a peer that connects and never sends must not stall this
+            # single-threaded loop (accept()'s timeout above doesn't cover the
+            # accepted socket) — bound the read to one sample period.
+            conn.settimeout(SAMPLE)
             # peer-cred gate (root only): accept a command ONLY from root or a
             # member of the `coldspot` group; default-deny everything else. Dev
             # (euid!=0) skips this entirely — preserving the smoke test.
@@ -1468,7 +1472,12 @@ def main():
                 conn.sendall(b'{"ok":false,"err":"unauthorized"}\n')
                 conn.close()
                 continue
-            req = json.loads(conn.recv(4096).split(b"\n", 1)[0] or b"{}")
+            try:
+                data = conn.recv(4096)
+            except socket.timeout:
+                conn.close()
+                continue
+            req = json.loads(data.split(b"\n", 1)[0] or b"{}")
             cmd = req.get("cmd")
             if cmd == "set":
                 if req.get("stance") in STANCES:
@@ -1483,8 +1492,14 @@ def main():
                     # the CLI no longer sudo's — the daemon enforces the stance.
                     enforce(stance)
                 if "budget" in req:
-                    budget = req["budget"]  # MB or None
-                    escalated = False
+                    b = req["budget"]  # MB or None
+                    # a non-numeric budget must be dropped here, not later: the
+                    # publish step below does arithmetic on it unconditionally
+                    # (100 * used_mb / budget), and a str/list/dict there is an
+                    # uncaught TypeError that kills the daemon (doctrine #6).
+                    if b is None or isinstance(b, (int, float)):
+                        budget = b
+                        escalated = False
                 conf = load_conf()  # pick up config edits without a restart
                 conn.sendall(b'{"ok":true}\n')
             elif cmd == "reset":

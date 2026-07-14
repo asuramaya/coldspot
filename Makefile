@@ -1,7 +1,7 @@
 # coldspot — common tasks. Run `make help` for the list.
 EXT := extension/coldspot@asuramaya
 
-.PHONY: help install pill deploy uninstall check lint bpf smoke clean
+.PHONY: help install pill deploy uninstall check lint bpf smoke attack clean
 
 help:
 	@echo "coldspot targets:"
@@ -13,6 +13,7 @@ help:
 	@echo "  make lint       ruff + shellcheck"
 	@echo "  make bpf        build the eBPF core from local kernel BTF"
 	@echo "  make smoke      run the no-root smoke test"
+	@echo "  make attack     fuzz the control socket adversarially (no root)"
 	@echo "  make clean      remove build artifacts"
 
 # install.sh is root-only and never self-elevates (see its header comment for
@@ -60,6 +61,9 @@ bpf:
 
 smoke:
 	bash tests/smoke.sh
+
+attack:
+	python3 tests/attack_socket.py
 
 clean:
 	rm -rf bpf/vmlinux.h bpf/*.o dist __pycache__ bin/__pycache__
