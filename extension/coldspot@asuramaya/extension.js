@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // coldspot panel pill — the cockpit. Live ↑/↓ meter, governed/stabilized-state
-// badge, per-network policy, multi-radio health + steer/bond control, one-tap
-// stance + warm (uncap), and notifications when the link changes state or an
-// app misbehaves. Reads /run/coldspot/status.json; applies actions via the
-// `coldspot` CLI, which talks to the (already-root) daemon over its control
-// socket — the pill never needs sudo, ever.
+// badge, per-network policy, link health (signal + gateway ping/jitter/loss —
+// useful at home as much as on a hotspot), multi-radio steer/bond control,
+// one-tap stance + warm (uncap), and notifications when the link changes
+// state or an app misbehaves. Reads /run/coldspot/status.json; applies
+// actions via the `coldspot` CLI, which talks to the (already-root) daemon
+// over its control socket — the pill never needs sudo, ever.
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import {QuickMenuToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
+import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const STATUS = '/run/coldspot/status.json';
 const COLDSPOT = 'coldspot';
@@ -27,6 +29,12 @@ const LIMITS = [['1mbps', '1 Mbit/s'], ['500kbps', '500 kbit/s'], ['off', 'no ca
 const PALETTE = { ACCENT: '#b9acff', DIM: '#9aa0a6', GOOD: '#4caf50',
                    WARN: '#ffbb33', BAD: '#ff5b5b' };
 const VERSION_FILE = '/usr/local/share/coldspot/VERSION';
+
+// chip styling for the stance row (kast/phanspeed idiom)
+const CHIP = 'border-radius:13px; padding:6px 10px; margin:0 2px; color:#dedde6;'
+    + ' background-color:rgba(255,255,255,0.07);';
+const CHIP_ON = 'border-radius:13px; padding:6px 10px; margin:0 2px; color:#ffffff;'
+    + ' font-weight:bold; background-color:#5b50a8;';
 
 function humanRate(bps) {
     let b = bps || 0;
@@ -50,6 +58,22 @@ function humanBits(bits) {
 const SIG_BARS = { good: '▂▄▆█', ok: '▂▄▆_', weak: '▂▄__',
                    bad: '▂___', down: '____', unknown: '____' };
 
+// real icon per signal score, for the tile itself — verified present in
+// Adwaita on this shell version (network-wireless-signal-* + offline/plain).
+const SIG_ICON = {
+    good: 'network-wireless-signal-excellent-symbolic',
+    ok: 'network-wireless-signal-good-symbolic',
+    weak: 'network-wireless-signal-weak-symbolic',
+    bad: 'network-wireless-signal-none-symbolic',
+    down: 'network-wireless-offline-symbolic',
+    unknown: 'network-wireless-symbolic',
+};
+const DEFAULT_ICON = 'network-wireless-symbolic';
+// a hard governance stance dominates the icon over live signal (cold/siege
+// are deliberate, sticky states worth seeing at a glance); lean/open defer
+// to the live signal-quality icon below since they're not a hard block.
+const STANCE_ICON = { cold: 'weather-snow-symbolic', siege: 'changes-prevent-symbolic' };
+
 function activeLink(st) {
     const links = st.links || {};
     for (const k in links) if (links[k].active) return links[k];
@@ -68,41 +92,37 @@ function stabilizeCapHint(h) {
     return ` ≈ down${humanBits(dl)}/up${humanBits(ul)}`;
 }
 
-const Pill = GObject.registerClass(
-class Pill extends PanelMenu.Button {
+const ColdspotToggle = GObject.registerClass(
+class ColdspotToggle extends QuickMenuToggle {
     _init() {
-        super._init(0.0, 'coldspot');
-        this._label = new St.Label({ text: 'coldspot', yAlign: 2 });
-        this.add_child(this._label);
+        super._init({ title: 'coldspot', iconName: DEFAULT_ICON, toggleMode: true });
+        this.menu.setHeader(DEFAULT_ICON, 'coldspot', 'Cold-link cockpit');
 
-        // read-only summary lines
-        this._header = new PopupMenu.PopupMenuItem('', { reactive: false });
+        // link health — signal + gateway ping/jitter/loss, always visible.
+        // This is the "at a glance" readout: as meaningful on an unmetered
+        // home network (is the wifi itself laggy?) as on a metered hotspot.
+        this._linkItem = new PopupMenu.PopupMenuItem('', { reactive: false });
+        this.menu.addMenuItem(this._linkItem);
+
+        // per-network policy — coldspot's own memory of what it does HERE.
         this._network = new PopupMenu.PopupMenuItem('', { reactive: false });
-        this._budget = new PopupMenu.PopupMenuItem('', { reactive: false });
-        this._govern = new PopupMenu.PopupMenuItem('', { reactive: false });
-        this.menu.addMenuItem(this._header);
         this.menu.addMenuItem(this._network);
-        this.menu.addMenuItem(this._budget);
-        this.menu.addMenuItem(this._govern);
-
-        // multi-radio: link health + steer + bond — only shown with 2+ radios
-        this._radioSep = new PopupMenu.PopupSeparatorMenuItem();
-        this.menu.addMenuItem(this._radioSep);
-        this._radioHint = new PopupMenu.PopupMenuItem('radios — tap one to steer', { reactive: false });
-        this.menu.addMenuItem(this._radioHint);
-        this._radios = new PopupMenu.PopupMenuSection();
-        this.menu.addMenuItem(this._radios);
-
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // stance switcher — one tap, current is dotted
+        // stance switcher — chips, one tap, current one lit
         this._stanceItems = {};
+        const stanceRow = new PopupMenu.PopupBaseMenuItem({ reactive: false, can_focus: false });
+        const stanceBox = new St.BoxLayout({ x_expand: true });
         for (const [name, glyph] of STANCES) {
-            const it = new PopupMenu.PopupMenuItem(`${glyph}  ${name}`);
-            it.connect('activate', () => this._run([COLDSPOT, name]));
-            this._stanceItems[name] = it;
-            this.menu.addMenuItem(it);
+            const btn = new St.Button({ label: glyph, x_expand: true, can_focus: true, style: CHIP });
+            btn.connect('clicked', () => this._run([COLDSPOT, name]));
+            stanceBox.add_child(btn);
+            this._stanceItems[name] = btn;
         }
+        stanceRow.add_child(stanceBox);
+        this.menu.addMenuItem(stanceRow);
+        this._govern = new PopupMenu.PopupMenuItem('', { reactive: false });
+        this.menu.addMenuItem(this._govern);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // per-network policy — coldspot's own memory (v0.3+): what it does on
@@ -126,6 +146,14 @@ class Pill extends PanelMenu.Button {
         this._historyItem = history;
         this.menu.addMenuItem(history);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // multi-radio: link health + steer + bond — only shown with 2+ radios
+        this._radioSep = new PopupMenu.PopupSeparatorMenuItem();
+        this.menu.addMenuItem(this._radioSep);
+        this._radioHint = new PopupMenu.PopupMenuItem('radios — tap one to steer', { reactive: false });
+        this.menu.addMenuItem(this._radioHint);
+        this._radios = new PopupMenu.PopupMenuSection();
+        this.menu.addMenuItem(this._radios);
 
         // talkers — tap one to warm it (full speed / priority under cold)
         this._talkHint = new PopupMenu.PopupMenuItem('top apps — tap to warm', { reactive: false });
@@ -159,12 +187,21 @@ class Pill extends PanelMenu.Button {
         this.menu.addMenuItem(reset);
 
         // dim version footer (shared family idiom) — read once, doesn't change
-        // at runtime, so no need to touch this again in _tick().
+        // at runtime, so no need to touch this again in refresh().
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._footer = new PopupMenu.PopupMenuItem(`coldspot ${this._readVersion()}`,
             { reactive: false });
         this._footer.label.style = `color:${PALETTE.DIM}; font-size:0.85em;`;
         this.menu.addMenuItem(this._footer);
+
+        // tap the pill body: quick engage/release, same two states the tile's
+        // checked reflects — mirrors how a Wi-Fi/Bluetooth tile's tap works.
+        this._stance = 'open';
+        this._lastStabilizeIface = null;
+        this.connect('clicked', () => {
+            if (this._stance === 'open') this._run([COLDSPOT, 'cold']);
+            else this._releaseAll();
+        });
 
         // notification de-dup state
         this._prevGoverned = false;
@@ -173,11 +210,10 @@ class Pill extends PanelMenu.Button {
         this._prevBonded = '';
         this._prevBudgetState = 'off';
         this._seenAdvice = new Set();
-        this._lastStabilizeIface = null;
 
-        this._tick();
+        this.refresh();
         this._timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => {
-            this._tick();
+            this.refresh();
             return GLib.SOURCE_CONTINUE;
         });
     }
@@ -268,37 +304,70 @@ class Pill extends PanelMenu.Button {
         if (this._seenAdvice.size > 64) this._seenAdvice.clear();
     }
 
-    _tick() {
+    refresh() {
         const st = this._read();
         if (!st) {
-            this._label.text = '⊘ coldspot';
-            this._label.style = '';
+            this.subtitle = 'daemon offline';
+            this.iconName = DEFAULT_ICON;
+            this.checked = false;
+            this._linkItem.label.text = 'no data';
+            this._network.visible = false;
+            this._govern.visible = false;
             return;
         }
         const stance = st.stance || 'open';
+        this._stance = stance;
         const glyph = (STANCES.find(s => s[0] === stance) || ['', '○'])[1];
         const used = st.budget?.used_mb ?? 0;
         const limit = st.budget?.limit_mb;
-
-        // panel pill: stance glyph + MB; heats up as the budget fills, blue when cold
-        this._label.text = limit ? `${glyph} ${used}/${limit} MB` : `${glyph} ${used} MB`;
         const state = st.budget?.state;
-        this._label.style = state === 'over' ? `color:${PALETTE.BAD};`
-            : state === 'warn' ? `color:${PALETTE.WARN};`
-            : (stance === 'cold') ? `color:${PALETTE.ACCENT};` : '';
-
         const r = st.rate_bps || {};
-        const conn = st.connection || st.iface || '?';
-        const m = st.metered ? ' ·metered' : '';
-        const links = st.links || {};
         const lk = activeLink(st);
-        const sig = (lk && lk.signal_dbm != null)
-            ? `${SIG_BARS[lk.score] || '____'} ${lk.signal_dbm}dBm  ` : '';
-        // if a healthier radio is sitting idle, say so right in the header —
-        // the same nudge `coldspot link` prints on the CLI
+
+        // tile: icon — a hard stance (cold/siege) wins; otherwise the live
+        // signal-quality icon, which is exactly as informative at home as on
+        // a hotspot (that's the whole point of surfacing it here).
+        this.iconName = STANCE_ICON[stance] || SIG_ICON[(lk && lk.score) || 'unknown'] || DEFAULT_ICON;
+        this.checked = stance !== 'open' || !!st.governed || !!st.stabilized;
+
+        // tile: subtitle — budget/stance framing once something's actually
+        // engaged (governed, capped, or a manual non-open stance); otherwise
+        // (the common "open, at home" case) lead with link health instead of
+        // a meaningless "0 MB" budget line.
+        let subtitle;
+        if (st.governed) {
+            const cap = st.cap_bits ? ` ≤${humanBits(st.cap_bits)}` : '';
+            subtitle = `❄ auto-cold${cap}`;
+        } else if (limit) {
+            subtitle = `${glyph} ${used}/${limit} MB`;
+        } else if (stance !== 'open') {
+            subtitle = st.stabilized ? '≈ stabilized' : `${glyph} ${stance}`;
+        } else {
+            const sig = (lk && lk.signal_dbm != null) ? `${lk.signal_dbm}dBm` : '';
+            const lat = (st.latency_ms != null) ? `${Math.round(st.latency_ms)}ms` : '';
+            subtitle = [sig, lat].filter(Boolean).join(' · ')
+                || `↓${humanRate(r.rx)} ↑${humanRate(r.tx)}`;
+        }
+        this.subtitle = subtitle;
+        this.menu.setHeader(this.iconName, 'coldspot',
+            `${st.connection || st.iface || '?'}${st.metered ? ' ·metered' : ''} · ${stance} · ${subtitle}`);
+
+        // link health row — signal + gateway ping/jitter/loss, always visible;
+        // the same nudge `coldspot link`/`coldspot aim` print on the CLI.
+        const linkParts = [];
+        if (lk) {
+            const bars = SIG_BARS[lk.score] || '____';
+            const dbm = lk.signal_dbm != null ? ` ${lk.signal_dbm}dBm` : '';
+            linkParts.push(`${bars}${dbm}`);
+        }
+        if (st.latency_ms != null) {
+            const jit = st.jitter_ms != null ? ` ±${st.jitter_ms}ms` : '';
+            linkParts.push(`ping ${Math.round(st.latency_ms)}ms${jit}`);
+        }
+        if (st.loss_pct) linkParts.push(`${st.loss_pct}% loss`);
         const better = (st.best_link && st.primary && st.best_link !== st.primary)
             ? `  ⚠ ${st.best_link} looks healthier` : '';
-        this._header.label.text = `${sig}${conn}${m} · ${stance} · ↓${humanRate(r.rx)} ↑${humanRate(r.tx)}${better}`;
+        this._linkItem.label.text = (linkParts.length ? linkParts.join('   ·   ') : 'no link data') + better;
 
         // per-network policy line — coldspot's own memory for this SSID
         if (st.network && st.network !== '?') {
@@ -310,17 +379,9 @@ class Pill extends PanelMenu.Button {
             this._network.visible = false;
         }
 
-        const dayMb = ((st.day?.rx_mb ?? 0) + (st.day?.tx_mb ?? 0)).toFixed(1);
-        let bline = limit
-            ? `budget ${used}/${limit} MB (${st.budget?.pct ?? 0}%)   ·   today ${dayMb} MB`
-            : `session ${used} MB   ·   today ${dayMb} MB`;
-        const eta = st.budget?.eta;
-        if (eta && state !== 'over')
-            bline += `   ·   cap ~${GLib.DateTime.new_from_unix_local(eta).format('%H:%M')}`;
-        this._budget.label.text = bline;
-
         // governed (cold) / stabilized (weak-link) badge — two independent
         // overlays the reconciler can apply; show whichever is live
+        const links = st.links || {};
         this._lastStabilizeIface = null;
         if (st.governed) {
             const cap = st.cap_bits ? ` ≤ ${humanBits(st.cap_bits)}` : '';
@@ -339,10 +400,8 @@ class Pill extends PanelMenu.Button {
             this._govern.visible = false;
         }
 
-        for (const [name] of STANCES) {
-            this._stanceItems[name].setOrnament(
-                name === stance ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
-        }
+        for (const [name] of STANCES)
+            this._stanceItems[name].set_style(name === stance ? CHIP_ON : CHIP);
         for (const [name] of POLICIES) {
             this._policyItems[name].setOrnament(
                 name === (st.policy || 'open') ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
@@ -452,13 +511,23 @@ class Pill extends PanelMenu.Button {
     }
 });
 
-export default class ColdspotExtension {
+const ColdspotIndicator = GObject.registerClass(
+class ColdspotIndicator extends SystemIndicator {
+    _init() {
+        super._init();
+        this.toggle = new ColdspotToggle();
+        this.quickSettingsItems.push(this.toggle);
+    }
+});
+
+export default class ColdspotExtension extends Extension {
     enable() {
-        this._pill = new Pill();
-        Main.panel.addToStatusArea('coldspot', this._pill);
+        this._indicator = new ColdspotIndicator();
+        Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
     }
     disable() {
-        this._pill?.destroy();
-        this._pill = null;
+        this._indicator?.quickSettingsItems.forEach(i => i.destroy());
+        this._indicator?.destroy();
+        this._indicator = null;
     }
 }

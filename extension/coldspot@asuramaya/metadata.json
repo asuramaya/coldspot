@@ -1,8 +1,8 @@
 {
   "uuid": "coldspot@asuramaya",
   "name": "coldspot",
-  "description": "Cold-link cockpit: live up/down, governed/stabilized state, per-network policy, multi-radio steer + bond, per-network history + today's ledger, one-tap stance & warm, notifications. Reads /run/coldspot/status.json.",
+  "description": "Cold-link cockpit, now a real QuickSettings pill: live up/down, link health (signal + gateway ping/jitter/loss — useful at home, not just on a hotspot), governed/stabilized state, per-network policy, multi-radio steer + bond, per-network history + today's ledger, one-tap stance & warm, notifications. Reads /run/coldspot/status.json.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/asuramaya/coldspot",
-  "version": 5
+  "version": 6
 }

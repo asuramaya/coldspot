@@ -19,9 +19,11 @@ import pwd
 import re
 import socket
 import sqlite3
+import statistics
 import struct
 import subprocess
 import time
+from collections import deque
 
 RUN = "/run/coldspot"
 STATE = "/var/lib/coldspot"
@@ -156,12 +158,74 @@ def active_iface():
     return None
 
 
+def default_gateway():
+    """IPv4 default gateway (dotted quad) from /proc/net/route, or None."""
+    try:
+        with open("/proc/net/route") as f:
+            for ln in f.readlines()[1:]:
+                p = ln.split()
+                if len(p) > 2 and p[1] == "00000000":
+                    return socket.inet_ntoa(struct.pack("<L", int(p[2], 16)))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def ping_once(host, timeout=1.0):
+    """One ICMP echo's round-trip time in ms, or None (unreachable / no reply /
+    ping missing). Always the LOCAL gateway, never a third party — this reads
+    "is the wifi hop itself laggy", independent of the metered/budget axis, so
+    it means just as much on an unmetered home network as on a hotspot (and it
+    never becomes an internet-reachability probe needing the SEC-M4 gating a
+    real external egress call would)."""
+    if not host:
+        return None
+    try:
+        out = subprocess.run(
+            ["ping", "-c", "1", "-W", str(max(1, int(timeout))), host],
+            capture_output=True, text=True, timeout=timeout + 1).stdout
+    except Exception:
+        return None
+    m = re.search(r"time[=<]([\d.]+)\s*ms", out)
+    return float(m.group(1)) if m else None
+
+
+def latency_stats(hist):
+    """(latency_ms, jitter_ms, loss_pct) from a rolling deque of samples (None =
+    a dropped ping). Jitter is the stdev of the successful RTTs (needs 2+ to
+    mean anything); loss is the share of the window with no reply at all."""
+    samples = list(hist)
+    if not samples:
+        return None, None, None
+    ok = [s for s in samples if s is not None]
+    latency = round(ok[-1], 1) if ok else None
+    jitter = round(statistics.pstdev(ok), 1) if len(ok) >= 2 else None
+    loss = round(100 * (len(samples) - len(ok)) / len(samples), 1)
+    return latency, jitter, loss
+
+
+def _unescape_iw_ssid(ssid):
+    """`iw dev link` prints any non-printable-ASCII SSID byte as a literal
+    \\xHH (see iw's print_ssid_escaped()) rather than passing the real bytes
+    through, so a unicode SSID (emoji, non-latin script, accented text, ...)
+    shows up as that literal escape text instead of rendering. Undo it: turn
+    each \\xHH back into its byte, then decode the whole thing as UTF-8."""
+    if "\\x" not in ssid:
+        return ssid
+    try:
+        raw = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), ssid)
+        return raw.encode("latin1").decode("utf-8")
+    except (UnicodeDecodeError, UnicodeEncodeError, ValueError):
+        return ssid   # not valid UTF-8 once reassembled; leave the escaped form as-is
+
+
 def _sanitize_ssid(ssid):
     """Strip control/escape bytes from an SSID (an AP name is attacker-chosen)
     before it reaches status.json / the policy store / any terminal render — no
     ANSI/terminal-escape injection — and bound its length. None passes through."""
     if not ssid:
         return ssid
+    ssid = _unescape_iw_ssid(ssid)
     return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', ssid)[:32]
 
 
@@ -712,7 +776,7 @@ def load_conf():
             "advise_tx_mb": 200, "advise_peers": 8, "cold_floor_bps": 32768,
             "anomaly": True, "anomaly_factor": 3.0, "anomaly_floor_mb": 200,
             "auto_govern": True, "cold_cap_bits": 2000000, "auto_steer": True,
-            "auto_bond": False}
+            "auto_bond": False, "latency_probe": True}
     try:
         for ln in open(CONF):
             ln = ln.strip()
@@ -720,7 +784,7 @@ def load_conf():
                 continue
             k, v = (x.strip() for x in ln.split("=", 1))
             if k in ("auto_siege", "advise", "anomaly", "auto_govern",
-                     "auto_steer", "auto_bond"):
+                     "auto_steer", "auto_bond", "latency_probe"):
                 conf[k] = v.lower() in ("1", "true", "yes", "on")
             elif k in ("advise_tx_mb", "advise_peers", "cold_floor_bps",
                        "anomaly_floor_mb", "cold_cap_bits"):
@@ -1419,6 +1483,7 @@ def main():
     last_steer_t = 0.0          # monotonic time of the last auto-steer switch
     egress_cache = {}           # iface -> (public_ip, monotonic_ts) for bonding
     bonded_set = set()          # ifaces currently aggregated into an ECMP bond
+    latency_hist = {}           # iface -> deque of recent gateway-ping RTTs (or None)
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -1675,6 +1740,18 @@ def main():
             for i, h in links.items():
                 h["egress_ip"] = egress_cache.get(i, (None, 0.0))[0]
 
+            # local-link latency/jitter/loss — the gateway hop only, never a
+            # third party (see ping_once's doctrine note). Independent of the
+            # metered/budget axis, so it's just as meaningful for judging a
+            # home network as a hotspot one. ~Every 10s (this block's cadence).
+            if conf.get("latency_probe", True) and act_if:
+                hist = latency_hist.setdefault(act_if, deque(maxlen=15))
+                hist.append(ping_once(default_gateway()))
+                lat_ms, jit_ms, loss_pct = latency_stats(hist)
+                links[act_if]["latency_ms"] = lat_ms
+                links[act_if]["jitter_ms"] = jit_ms
+                links[act_if]["loss_pct"] = loss_pct
+
             # populate the `critical` BPF map BEFORE the reconciler can enforce
             # cold this tick — else NM/DNS/updates could be throttled in the
             # window between applying cold and mapping the critical cgroups.
@@ -1802,9 +1879,13 @@ def main():
             if enforce("siege"):
                 stance, escalated = "siege", True
 
+        active_health = links.get(act_if, {})
         atomic_write(STATUS, {
             "iface": iface, "connection": link_name, "metered": metered,
             "stance": stance, "source": src,
+            "latency_ms": active_health.get("latency_ms"),
+            "jitter_ms": active_health.get("jitter_ms"),
+            "loss_pct": active_health.get("loss_pct"),
             "auto_siege": conf["auto_siege"], "rate_bps": rate,
             "auto_govern": conf.get("auto_govern", True), "governed": auto_governed,
             "cap_bits": conf.get("cold_cap_bits") if stance == "cold" else None,
