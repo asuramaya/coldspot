@@ -1,0 +1,62 @@
+name: signing-sync
+# Enforces RELEASE.md's sync-signers invariant: release-signing/allowed_signers
+# (and install.sh's embedded twin) must always be either (a) empty — the
+# pre-arming shipping state, verification inert — or (b) exactly the fleet's
+# 4 canonical pubkeys (rotten-apple/release-signing/*.pub), rebuilt in full,
+# never hand-edited or partially appended. "Same 4 keys everywhere" is a
+# CHECKED invariant here, not a convention.
+#
+# Assumes rotten-apple is reachable as a public sibling checkout. If it's
+# private, this step needs a read-only cross-repo token (public-key material
+# only — never a signing secret) added as a secret and passed to
+# actions/checkout's `token:` input; until then this job degrades to the
+# empty-anchor check only, never hard-failing on infrastructure it can't reach.
+
+on:
+  push:
+    branches: ['main']
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout coldspot
+        uses: actions/checkout@v5
+        with:
+          path: coldspot
+
+      - name: Checkout rotten-apple (canonical pubkey source)
+        id: ra
+        continue-on-error: true
+        uses: actions/checkout@v5
+        with:
+          repository: asuramaya/rotten-apple
+          path: rotten-apple
+          sparse-checkout: release-signing
+
+      - name: Verify the sync-signers invariant
+        run: |
+          cd coldspot
+          if [[ -s release-signing/allowed_signers ]]; then
+            echo "anchor is ARMED — must exactly match a fresh rebuild from the canonical set."
+            if [[ "${{ steps.ra.outcome }}" != "success" ]]; then
+              echo "::error::rotten-apple checkout unavailable — cannot verify an armed anchor. See this workflow's header comment (needs a read-only cross-repo token if rotten-apple is private)."
+              exit 1
+            fi
+            ROTTEN_APPLE_DIR="$GITHUB_WORKSPACE/rotten-apple" make sync-signers
+            git diff --exit-code release-signing/allowed_signers install.sh || {
+              echo "::error::allowed_signers/install.sh have drifted from the canonical 4-key set. Re-run 'make sync-signers' and commit the result — never hand-edit."
+              exit 1
+            }
+            echo "anchor matches the canonical set OK"
+          else
+            echo "anchor is UNARMED (empty) — this is the pre-signing shipping state; nothing to check against it."
+            if [[ "${{ steps.ra.outcome }}" == "success" ]]; then
+              n=$(find "$GITHUB_WORKSPACE/rotten-apple/release-signing" -maxdepth 1 -name '*.pub' | wc -l)
+              [[ "$n" -eq 4 ]] || { echo "::error::canonical source has $n pubkeys, expected 4."; exit 1; }
+              echo "canonical source healthy (4 pubkeys) OK"
+            else
+              echo "rotten-apple unreachable — skipping the canonical-source sanity check (anchor is unarmed, so nothing here is actually enforcing yet)."
+            fi
+          fi

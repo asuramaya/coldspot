@@ -18,20 +18,24 @@ BINDIR="$PREFIX/bin"
 SHAREDIR="$PREFIX/share/coldspot"
 UNITDIR="/etc/systemd/system"
 EXT_UUID="coldspot@asuramaya"
+# principal = WHO (the repo's stable identity); namespace = WHAT-FOR (what
+# this signature authorizes). Never conflate the two — see RELEASE.md.
+SIGN_PRINCIPAL="coldspot"
 SIGN_NAMESPACE="coldspot-release"
 
 # Trust anchor for the curl-pipe-bash bootstrap below, EMBEDDED directly:
 # `curl .../install.sh | sudo bash` fetches this ONE file over the network, so
 # at that point there is no sibling release-signing/allowed_signers to read —
 # unlike coldspot-update (an installed, persistent script), which reads that
-# file straight off disk. Ships empty until a key is provisioned; keep this in
-# sync with release-signing/allowed_signers on every rotation:
-#   RELEASE_ALLOWED_SIGNERS="$(cat release-signing/allowed_signers)"
-# (see docs/RELEASE-SIGNING.md). While empty, the bootstrap below degrades to
-# sha256-only with a printed warning rather than refusing to install outright
-# — this is a one-time, human-typed `sudo` action, not the unattended daily
-# updater (coldspot-update), which has the stricter no-key-no-install policy.
-RELEASE_ALLOWED_SIGNERS=""
+# file straight off disk. Ships empty until a key is provisioned; kept in sync
+# with release-signing/allowed_signers by `make sync-signers`
+# (tools/sync-signers.sh) — never hand-edit this. Single-quoted deliberately:
+# the value can span multiple lines (one per pinned key) and must never be
+# shell-interpolated. While empty, the bootstrap below degrades to sha256-only
+# with a printed warning rather than refusing to install outright — this is a
+# one-time, human-typed `sudo` action, not the unattended daily updater
+# (coldspot-update), which has the stricter no-key-no-install policy.
+RELEASE_ALLOWED_SIGNERS=''
 
 # ---- root, checked FIRST, before any download --------------------------
 # Fail fast and plainly rather than self-elevating: `curl | bash` without sudo
@@ -88,7 +92,7 @@ verify_release_tarball() {
     || { echo "could not fetch release signature; refusing unsigned install." >&2; exit 1; }
   signers="$tmp/allowed_signers"
   printf '%s\n' "$RELEASE_ALLOWED_SIGNERS" > "$signers"
-  if ! ssh-keygen -Y verify -f "$signers" -I "$SIGN_NAMESPACE" -n "$SIGN_NAMESPACE" \
+  if ! ssh-keygen -Y verify -f "$signers" -I "$SIGN_PRINCIPAL" -n "$SIGN_NAMESPACE" \
         -s "$sig" < "$sums" >/dev/null 2>&1; then
     echo "signature verification FAILED; refusing to install." >&2; exit 1
   fi

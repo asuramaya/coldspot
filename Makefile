@@ -1,20 +1,21 @@
 # coldspot — common tasks. Run `make help` for the list.
 EXT := extension/coldspot@asuramaya
 
-.PHONY: help install pill deploy uninstall check lint bpf smoke attack clean
+.PHONY: help install pill deploy uninstall check lint bpf smoke attack sync-signers clean
 
 help:
 	@echo "coldspot targets:"
-	@echo "  make install    install daemon + auto-update timer (needs sudo)"
-	@echo "  make pill       add the GNOME pill to YOUR account (no sudo, run after install)"
-	@echo "  make deploy     smoke-test, then push bins+bpf+daemon and reload (sudo)"
-	@echo "  make uninstall  remove everything except your GNOME pill (sudo; see make pill-remove)"
-	@echo "  make check      run all static checks (CI-equivalent)"
-	@echo "  make lint       ruff + shellcheck"
-	@echo "  make bpf        build the eBPF core from local kernel BTF"
-	@echo "  make smoke      run the no-root smoke test"
-	@echo "  make attack     fuzz the control socket adversarially (no root)"
-	@echo "  make clean      remove build artifacts"
+	@echo "  make install       install daemon + auto-update timer (needs sudo)"
+	@echo "  make pill          add the GNOME pill to YOUR account (no sudo, run after install)"
+	@echo "  make deploy        smoke-test, then push bins+bpf+daemon and reload (sudo)"
+	@echo "  make uninstall     remove everything except your GNOME pill (sudo; see make pill-remove)"
+	@echo "  make check         run all static checks (CI-equivalent)"
+	@echo "  make lint          ruff + shellcheck"
+	@echo "  make bpf           build the eBPF core from local kernel BTF"
+	@echo "  make smoke         run the no-root smoke test"
+	@echo "  make attack        fuzz the control socket adversarially (no root)"
+	@echo "  make sync-signers  rebuild release-signing/allowed_signers from the canonical keys (see docs/RELEASE-SIGNING.md — do NOT run casually)"
+	@echo "  make clean         remove build artifacts"
 
 # install.sh is root-only and never self-elevates (see its header comment for
 # why) — it fails with a clear message if you forget sudo, rather than quietly
@@ -44,11 +45,11 @@ uninstall:
 
 lint:
 	-ruff check bin/coldspot bin/coldspotd 2>/dev/null || true
-	shellcheck install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh tests/test_signing.sh
+	shellcheck install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh tools/sync-signers.sh tests/test_signing.sh
 
 check: lint
 	python3 -m py_compile bin/coldspotd bin/coldspot
-	bash -n install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh
+	bash -n install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh tools/sync-signers.sh
 	node --check $(EXT)/extension.js
 	python3 -c "import json; json.load(open('$(EXT)/metadata.json'))"
 	python3 tests/test_units.py
@@ -65,6 +66,12 @@ smoke:
 
 attack:
 	python3 tests/attack_socket.py
+
+# Populates the trust anchor — see docs/RELEASE-SIGNING.md's sequencing rule.
+# Only run this in the same act as cutting the operator's first signed
+# release; it is NOT part of `make check` or day-to-day dev.
+sync-signers:
+	bash tools/sync-signers.sh
 
 clean:
 	rm -rf bpf/vmlinux.h bpf/*.o dist __pycache__ bin/__pycache__

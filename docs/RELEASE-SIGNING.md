@@ -45,23 +45,37 @@ signed by hand, from the maintainer's machine, with the hardware key attached.
   runs as root with nobody watching, which is exactly where a forged release
   would do the most damage, so it gets the stricter of the two policies.
 
-## One-time setup (maintainer, needs the FIDO2 key attached)
+## Identity vs role — principal is WHO, namespace is WHAT-FOR
+
+Per `~/code/REPOS/RELEASE.md` (the fleet's release doctrine): **principal**
+(`-I`) is the repo's stable identity (`coldspot`); **namespace** (`-n`) is
+what a given signature authorizes (`coldspot-release`). Never pass the same
+string for both — that welds identity to role and only works by accident.
+`allowed_signers` line format (one line per key, exactly 4 when populated):
+
+```
+coldspot namespaces="coldspot-release,pills-tag" sk-ssh-ed25519@openssh.com <b64> ra-master-<n>
+```
+
+## One-time setup — `make sync-signers`, never hand-edit
 
 ```sh
-# Sign with the fleet's already-enrolled master identity (release-signing/
-# id_ra_master_N.pub from rotten-apple) rather than minting a coldspot-only
-# key — one hardware ceremony, reused everywhere. Populate the trust anchor
-# that ships in the repo and gets pinned on every install:
-echo "coldspot-release $(cat /path/to/id_ra_master_N.pub)" \
-  > release-signing/allowed_signers
-
-# install.sh's curl-pipe-bash bootstrap only ever fetches ONE file (itself),
-# so it can't read the sibling allowed_signers file — the same line has to be
-# embedded directly in install.sh's RELEASE_ALLOWED_SIGNERS constant too. Keep
-# both in sync on every rotation.
-sed -i "s|^RELEASE_ALLOWED_SIGNERS=.*|RELEASE_ALLOWED_SIGNERS=\"$(cat release-signing/allowed_signers)\"|" \
-  install.sh
+make sync-signers
 ```
+
+Rebuilds `release-signing/allowed_signers` **and** `install.sh`'s embedded
+`RELEASE_ALLOWED_SIGNERS` twin from ALL 4 canonical pubkeys in
+`rotten-apple/release-signing/*.pub` (auto-detected as a sibling checkout, or
+set `ROTTEN_APPLE_DIR=/path/to/rotten-apple`). Always a full rebuild, never an
+append — RA's first ceremony left 3 of 4 keys unpinned that way by appending
+one at a time. Refuses to run unless it finds exactly 4 canonical keys.
+
+**Sequencing rule (do not skip):** `make sync-signers` populates the anchor.
+Run it ONLY in the same act as cutting the operator's first signed coldspot
+release — arming it any earlier bricks `coldspot-update` against every
+existing unsigned release (see "Verification semantics" below). Until then,
+`release-signing/allowed_signers` ships empty and CI's `sync-signers` check
+(`.github/workflows/signing-sync.yml`) just confirms that stays true.
 
 ## Per-release signing (maintainer, needs the FIDO2 key attached + a touch)
 
@@ -80,7 +94,7 @@ gh release upload vX.Y.Z coldspot.tar.gz.sha256.sig
 
 ```sh
 ssh-keygen -Y verify -f release-signing/allowed_signers \
-  -I coldspot-release -n coldspot-release \
+  -I coldspot -n coldspot-release \
   -s coldspot.tar.gz.sha256.sig < coldspot.tar.gz.sha256
 ```
 

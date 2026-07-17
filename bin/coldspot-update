@@ -33,6 +33,9 @@ REPO="asuramaya/coldspot"
 VERSION_FILE="/usr/local/share/coldspot/VERSION"
 CONF="/etc/coldspot.conf"
 REL_BASE="https://github.com/${REPO}/releases/latest/download"
+# principal = WHO (the repo's stable identity); namespace = WHAT-FOR (what
+# this signature authorizes). Never conflate the two — see RELEASE.md.
+SIGN_PRINCIPAL="coldspot"
 SIGN_NAMESPACE="coldspot-release"
 
 # Trust anchor: the installed copy first (what a real deployment reads), else
@@ -70,13 +73,16 @@ has_signing_key() {
 
 # True/false: does the detached signature in $2 (a file path) verify $1 (a
 # file path, the exact bytes that were signed) against the pinned key(s) in
-# $3 (allowed_signers path, defaults to allowed_signers_path)? Namespace binds
-# the signature to this specific use (defaults to SIGN_NAMESPACE) — a
-# signature made for a different purpose must not verify here.
+# $3 (allowed_signers path, defaults to allowed_signers_path), for principal
+# $4 (defaults to SIGN_PRINCIPAL) and namespace $5 (defaults to
+# SIGN_NAMESPACE)? Principal is WHO (this repo's identity); namespace is
+# WHAT-FOR (what this signature authorizes) — a signature made for a
+# different purpose, or by a principal not pinned in allowed_signers, must
+# not verify here.
 verify_signature() {
   local data_file="$1" sig_file="$2" signers="${3:-$(allowed_signers_path)}" \
-       ns="${4:-$SIGN_NAMESPACE}"
-  ssh-keygen -Y verify -f "$signers" -I "$ns" -n "$ns" -s "$sig_file" \
+       principal="${4:-$SIGN_PRINCIPAL}" ns="${5:-$SIGN_NAMESPACE}"
+  ssh-keygen -Y verify -f "$signers" -I "$principal" -n "$ns" -s "$sig_file" \
     < "$data_file" >/dev/null 2>&1
 }
 
