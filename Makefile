@@ -44,7 +44,7 @@ uninstall:
 
 lint:
 	-ruff check bin/coldspot bin/coldspotd 2>/dev/null || true
-	shellcheck install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh
+	shellcheck install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh tests/test_signing.sh
 
 check: lint
 	python3 -m py_compile bin/coldspotd bin/coldspot
@@ -52,6 +52,7 @@ check: lint
 	node --check $(EXT)/extension.js
 	python3 -c "import json; json.load(open('$(EXT)/metadata.json'))"
 	python3 tests/test_units.py
+	bash tests/test_signing.sh
 	@echo "all static checks passed"
 
 bpf:

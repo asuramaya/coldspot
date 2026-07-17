@@ -31,14 +31,16 @@ jobs:
           echo "--- contents ---"
           tar -tzf coldspot.tar.gz
 
-      # No signing step here, deliberately: coldspot-update trusts a detached
-      # signature verified against a key pinned INSIDE the client, precisely so
-      # that this CI (or the GitHub account behind it) is not the trust root.
-      # A secret key living in Actions secrets would let anyone who compromises
-      # the account or the workflow sign whatever they just pushed — that
-      # defeats the entire scheme. The release ships UNSIGNED from here; the
-      # operator signs these exact published bytes BY HAND, offline, and runs
-      # `gh release upload <tag> coldspot.tar.gz.minisig --clobber` afterward.
+      # No signing step here, deliberately: coldspot-update trusts an SSH
+      # signature (ssh-keygen -Y verify) against a key pinned INSIDE the
+      # client (release-signing/allowed_signers, docs/RELEASE-SIGNING.md),
+      # precisely so that this CI (or the GitHub account behind it) is not the
+      # trust root. A secret/hardware key living in Actions secrets would let
+      # anyone who compromises the account or the workflow sign whatever they
+      # just pushed — that defeats the entire scheme. The release ships
+      # UNSIGNED from here; the operator signs the checksum manifest's exact
+      # published bytes BY HAND, offline, with the physical FIDO2 key, and runs
+      # `gh release upload <tag> coldspot.tar.gz.sha256.sig --clobber` after.
 
       - name: Create or update GitHub release
         env:

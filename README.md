@@ -145,9 +145,10 @@ one-liner). The v1 BPF core is built at install time — see `bpf/README.md`.
 
 Auto-update is **opt-in**: it's a root process running unattended, so it stays
 off until you set `auto_update = on` in `/etc/coldspot.conf` and enable the
-timer (`sudo systemctl enable --now coldspot-update.timer`). Either way — auto
-or manual — it refuses to install anything unless the release tarball carries
-a valid minisign signature against a pinned key; a bare version bump with no
+timer (`sudo systemctl enable --now coldspot-update.timer`). It refuses to
+install anything unless the release's checksum manifest carries a valid SSH
+signature (`ssh-keygen -Y verify`, FIDO2 hardware key) against a pinned
+principal — see `docs/RELEASE-SIGNING.md`; a bare version bump with no
 signature is rejected, not trusted.
 
 ## Status

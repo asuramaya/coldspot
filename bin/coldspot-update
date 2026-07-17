@@ -6,11 +6,14 @@
 # coldspot is a source/tarball install (binaries in /usr/local/bin), so updating
 # means fetching the published release tarball and re-running the installer FROM
 # that verified tarball. We deliberately do NOT pipe a network script to root
-# bash: the trust root is a detached minisign signature (coldspot.tar.gz.minisig)
-# verified against a PINNED public key. A co-located sha256 only detects
-# corruption, not a repo/account compromise (whoever can publish a release can
-# publish a matching hash too), so the signature is mandatory and the updater
-# FAILS CLOSED — no signature, no key, or no minisign means no install.
+# bash: the trust root is an SSH signature (ssh-keygen -Y sign/-Y verify) over
+# the release's checksum manifest, verified against release-signing/allowed_signers
+# — the fleet's shared FIDO2 master identity (docs/RELEASE-SIGNING.md), pinned
+# hardware-only so a compromised CI/build machine can't forge a release without
+# the physical key. A co-located sha256 only detects corruption, not a repo/
+# account compromise (whoever can publish a release can publish a matching hash
+# too), so the signature is mandatory and the updater FAILS CLOSED — no
+# signature, no key, or no ssh-keygen means no install.
 #
 # Auto-update is OPT-IN. The systemd timer runs `coldspot-update --auto`, which
 # no-ops unless auto_update is turned on in /etc/coldspot.conf. A manual run
@@ -21,18 +24,21 @@
 #   coldspot-update --check    report only, don't install
 #   coldspot-update --json     machine-readable {current,latest,available}
 # Intended to run from coldspot-update.timer (daily) as root.
+#
+# Set COLDSPOT_UPDATE_SOURCED=1 before sourcing this file to load its functions
+# (tests/test_signing.sh does this) without running the update itself.
 set -uo pipefail
 
 REPO="asuramaya/coldspot"
 VERSION_FILE="/usr/local/share/coldspot/VERSION"
 CONF="/etc/coldspot.conf"
 REL_BASE="https://github.com/${REPO}/releases/latest/download"
+SIGN_NAMESPACE="coldspot-release"
 
-# Pinned minisign public key for release authenticity. This MUST be set to the
-# project's real minisign public key (the base64 string on the line after the
-# "untrusted comment:" line of minisign.pub, e.g. "RWQ...") before auto-update
-# can ever install anything. While it is empty, signature verification cannot
-# succeed, so the updater fails closed and auto-update stays disabled.
+# Trust anchor: the installed copy first (what a real deployment reads), else
+# the repo-relative path (dev / source checkout / this file run in place).
+# Ships EMPTY until a real key is provisioned (docs/RELEASE-SIGNING.md) — while
+# it is, has_signing_key below is false and the updater fails closed.
 #
 # The matching SECRET key must NEVER be provisioned in CI: signing exists so
 # that a compromised GitHub account (or CI itself) is not the trust root. CI
@@ -40,7 +46,39 @@ REL_BASE="https://github.com/${REPO}/releases/latest/download"
 # operator signs those exact published bytes BY HAND, offline, with a key that
 # never touches this repo's secrets, and uploads the resulting signature to
 # the release afterward (see .github/workflows/release.yml).
-COLDSPOT_MINISIGN_PUBKEY=""
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd || echo /nonexistent)"
+ALLOWED_SIGNERS_CANDIDATES=(
+  "/usr/local/share/coldspot/allowed_signers"
+  "$HERE/release-signing/allowed_signers"
+)
+
+allowed_signers_path() {
+  local p
+  for p in "${ALLOWED_SIGNERS_CANDIDATES[@]}"; do
+    [[ -f "$p" ]] && { echo "$p"; return; }
+  done
+  echo "${ALLOWED_SIGNERS_CANDIDATES[0]}"
+}
+
+# Has a real key been provisioned, or is this still the empty placeholder?
+# allowed_signers lines are "principal [options] keytype base64key"; a file
+# that's absent, empty, or whitespace-only counts as "no key yet".
+has_signing_key() {
+  local f="${1:-$(allowed_signers_path)}"
+  [[ -s "$f" ]] && grep -q '[^[:space:]]' "$f"
+}
+
+# True/false: does the detached signature in $2 (a file path) verify $1 (a
+# file path, the exact bytes that were signed) against the pinned key(s) in
+# $3 (allowed_signers path, defaults to allowed_signers_path)? Namespace binds
+# the signature to this specific use (defaults to SIGN_NAMESPACE) — a
+# signature made for a different purpose must not verify here.
+verify_signature() {
+  local data_file="$1" sig_file="$2" signers="${3:-$(allowed_signers_path)}" \
+       ns="${4:-$SIGN_NAMESPACE}"
+  ssh-keygen -Y verify -f "$signers" -I "$ns" -n "$ns" -s "$sig_file" \
+    < "$data_file" >/dev/null 2>&1
+}
 
 installed_version() {
   tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null \
@@ -73,50 +111,52 @@ verify_and_install() {
   command -v curl >/dev/null 2>&1 || { echo "curl is required to update." >&2; return 1; }
   command -v tar  >/dev/null 2>&1 || { echo "tar is required to update." >&2; return 1; }
 
-  # Trust root #1: a pinned public key must be compiled in.
-  if [[ -z "$COLDSPOT_MINISIGN_PUBKEY" ]]; then
-    echo "ERROR: no pinned minisign public key set; refusing to install (fail closed)." >&2
-    echo "       Set COLDSPOT_MINISIGN_PUBKEY in coldspot-update to the project key." >&2
+  # Trust root #1: a real key must be pinned (not the shipped-empty placeholder).
+  if ! has_signing_key; then
+    echo "ERROR: no release-signing key provisioned yet; refusing to install (fail closed)." >&2
+    echo "       $(allowed_signers_path) is empty — see docs/RELEASE-SIGNING.md." >&2
     return 1
   fi
   # Trust root #2: the verifier itself must be present.
-  command -v minisign >/dev/null 2>&1 || {
-    echo "ERROR: minisign not installed; cannot verify release authenticity. Aborting." >&2
-    echo "       Install it (e.g. 'apt-get install -y minisign') and retry." >&2
+  command -v ssh-keygen >/dev/null 2>&1 || {
+    echo "ERROR: ssh-keygen not found; cannot verify release authenticity. Aborting." >&2
+    echo "       Install openssh-client and retry." >&2
     return 1; }
 
-  local tmp tarball sig
+  local tmp tarball sums sig
   tmp="$(mktemp -d)" || { echo "mktemp failed." >&2; return 1; }
   trap 'rm -rf "$tmp"' RETURN
   tarball="$tmp/coldspot.tar.gz"
-  sig="${tarball}.minisig"   # minisign -Vm looks for <tarball>.minisig by default
+  sums="$tmp/coldspot.tar.gz.sha256"
+  sig="$tmp/coldspot.tar.gz.sha256.sig"   # signs the checksum manifest, not the tarball itself
 
   echo "== fetching latest coldspot release =="
-  curl -fsSL "${REL_BASE}/coldspot.tar.gz"         -o "$tarball" \
+  curl -fsSL "${REL_BASE}/coldspot.tar.gz"             -o "$tarball" \
     || { echo "download failed (tarball)." >&2; return 1; }
-  curl -fsSL "${REL_BASE}/coldspot.tar.gz.minisig" -o "$sig" \
+  curl -fsSL "${REL_BASE}/coldspot.tar.gz.sha256"       -o "$sums" \
+    || { echo "download failed (checksum manifest)." >&2; return 1; }
+  curl -fsSL "${REL_BASE}/coldspot.tar.gz.sha256.sig"   -o "$sig" \
     || { echo "download failed (signature) — release is unsigned or unreachable; aborting." >&2; return 1; }
 
-  # MANDATORY: detached-signature verification against the pinned public key.
-  if ! minisign -Vm "$tarball" -P "$COLDSPOT_MINISIGN_PUBKEY" >/dev/null 2>&1; then
+  # MANDATORY: the checksum manifest itself must carry a valid signature from
+  # the pinned key. Signing the (small) manifest rather than the tarball
+  # directly still covers the tarball transitively, via the hash check below.
+  if ! verify_signature "$sums" "$sig"; then
     echo "ERROR: signature verification FAILED; refusing to install." >&2
     return 1
   fi
   echo "verified release signature."
 
-  # ADDITIONAL (non-authoritative) integrity check: the co-located sha256, when
-  # published. This only catches corruption; the signature above is the trust.
-  if command -v sha256sum >/dev/null 2>&1; then
-    local want got
-    want="$(curl -fsSL "${REL_BASE}/coldspot.tar.gz.sha256" 2>/dev/null \
-          | awk '$2 == "coldspot.tar.gz" { print $1; exit }')"
-    if [[ -n "$want" ]]; then
-      got="$(sha256sum "$tarball" | awk '{print $1}')"
-      [[ "$want" == "$got" ]] \
-        || { echo "ERROR: sha256 mismatch after signature check; aborting." >&2; return 1; }
-      echo "verified release checksum."
-    fi
-  fi
+  command -v sha256sum >/dev/null 2>&1 || {
+    echo "ERROR: sha256sum not found; cannot bind the signed manifest to the tarball." >&2
+    return 1; }
+  local want got
+  want="$(awk '$2 == "coldspot.tar.gz" { print $1; exit }' "$sums")"
+  [[ -n "$want" ]] || { echo "ERROR: coldspot.tar.gz not found in the signed manifest." >&2; return 1; }
+  got="$(sha256sum "$tarball" | awk '{print $1}')"
+  [[ "$want" == "$got" ]] \
+    || { echo "ERROR: tarball doesn't match the signed checksum; aborting." >&2; return 1; }
+  echo "verified release checksum."
 
   tar -xzf "$tarball" -C "$tmp" || { echo "extract failed." >&2; return 1; }
   local inner
@@ -125,6 +165,10 @@ verify_and_install() {
   echo "running installer from verified tarball ..."
   bash "$inner"   # local, signature-verified script — never a network pipe
 }
+
+# tests/test_signing.sh sources this file (with COLDSPOT_UPDATE_SOURCED=1) to
+# reach has_signing_key/verify_signature directly, without running an update.
+if [[ "${COLDSPOT_UPDATE_SOURCED:-0}" != "1" ]]; then
 
 # ---- arg parsing (order-independent flags; unknown args ignored) -----------
 auto=0 check=0 json=0
@@ -171,3 +215,5 @@ echo "update available: ${cur:-unknown} -> ${latest}"
 echo "updating coldspot ${cur:-unknown} -> ${latest} ..."
 verify_and_install
 exit $?
+
+fi
