@@ -34,9 +34,10 @@
 """
 import json
 import os
-import socket
 import subprocess
 import sys
+
+import sutra
 
 RUN = "/run/coldspot"
 SOCK = f"{RUN}/control.sock"
@@ -56,30 +57,21 @@ def _human(bps):
 
 
 def _sock(obj):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(3)
-    try:
-        s.connect(SOCK)
-        s.sendall(json.dumps(obj).encode() + b"\n")
-        return json.loads(s.recv(1 << 16).split(b"\n", 1)[0])
-    finally:
-        s.close()
+    """One JSON command to the daemon; None if the socket is unreachable —
+    matching sutra.request's contract (it swallows connect/read failures
+    rather than raising, unlike the old hand-rolled version)."""
+    return sutra.request(SOCK, obj, timeout=3)
 
 
 def _status():
-    try:
-        with open(STATUS) as f:
-            return json.load(f)
-    except OSError:
-        return None
+    return sutra.read_status(STATUS)
 
 
 def _set(**kw):
     kw["cmd"] = "set"
-    try:
-        r = _sock(kw)
-    except OSError as e:
-        sys.exit(f"cannot reach coldspotd ({e}); is the service running?")
+    r = _sock(kw)
+    if r is None:
+        sys.exit("cannot reach coldspotd; is the service running?")
     if not r.get("ok"):
         sys.exit(f"rejected: {r.get('error')}")
     return r
@@ -89,10 +81,9 @@ def _cmd(**kw):
     """Ask the (root) daemon to perform a privileged op over the control socket
     and return (ok, err). The daemon is the only privileged actor now — the CLI
     never sudo's for stance/steer/bond/limit/stabilize/uncap/run."""
-    try:
-        r = _sock(kw)
-    except OSError as e:
-        return False, f"cannot reach coldspotd ({e}); is the service running?"
+    r = _sock(kw)
+    if r is None:
+        return False, "cannot reach coldspotd; is the service running?"
     return bool(r.get("ok")), r.get("err")
 
 

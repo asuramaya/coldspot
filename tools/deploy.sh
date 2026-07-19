@@ -45,6 +45,8 @@ echo "== bins -> $BINDIR =="
 for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
   install -m 0755 -o root -g root "$SRC/bin/$b" "$BINDIR/$b"
 done
+# coldspotd/coldspot both `import sutra` as a sibling — see install.sh's note.
+install -m 0644 -o root -g root "$SRC/bin/sutra.py" "$BINDIR/sutra.py"
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/VERSION" "$SHAREDIR/VERSION"
 

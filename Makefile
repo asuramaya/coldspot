@@ -1,7 +1,7 @@
 # coldspot — common tasks. Run `make help` for the list.
 EXT := extension/coldspot@asuramaya
 
-.PHONY: help install pill deploy uninstall check lint bpf smoke attack sync-signers clean
+.PHONY: help install pill deploy uninstall check lint bpf smoke attack sync-signers check-sutra clean
 
 help:
 	@echo "coldspot targets:"
@@ -14,6 +14,7 @@ help:
 	@echo "  make bpf           build the eBPF core from local kernel BTF"
 	@echo "  make smoke         run the no-root smoke test"
 	@echo "  make attack        fuzz the control socket adversarially (no root)"
+	@echo "  make check-sutra   verify the vendored bin/sutra.py wasn't hand-edited (+ freshness if canon is checked out)"
 	@echo "  make sync-signers  rebuild release-signing/allowed_signers from the canonical keys (see docs/RELEASE-SIGNING.md — do NOT run casually)"
 	@echo "  make clean         remove build artifacts"
 
@@ -47,14 +48,38 @@ lint:
 	-ruff check bin/coldspot bin/coldspotd 2>/dev/null || true
 	shellcheck install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh tools/sync-signers.sh tests/test_signing.sh
 
-check: lint
-	python3 -m py_compile bin/coldspotd bin/coldspot
+check: lint check-sutra
+	python3 -m py_compile bin/coldspotd bin/coldspot bin/sutra.py
 	bash -n install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh tools/sync-signers.sh
 	node --check $(EXT)/extension.js
 	python3 -c "import json; json.load(open('$(EXT)/metadata.json'))"
 	python3 tests/test_units.py
 	bash tests/test_signing.sh
 	@echo "all static checks passed"
+
+# Drift guard for the vendored sutra copy: integrity (hash matches what
+# vendor.sh recorded — the copy wasn't hand-edited) always runs; freshness
+# (diff against the canonical source) only when that checkout is present,
+# which it normally isn't in CI.
+check-sutra:
+	@ver=$$(cut -d' ' -f1 bin/sutra.version); \
+	sha=$$(awk '{print $$NF}' bin/sutra.version); \
+	actual=$$(sha256sum bin/sutra.py | cut -d' ' -f1); \
+	if [ "$$sha" != "$$actual" ]; then \
+	    echo "check-sutra FAIL: bin/sutra.py doesn't match bin/sutra.version" \
+	         "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh bin)"; \
+	    exit 1; \
+	fi; \
+	echo "check-sutra: integrity ok (sutra $$ver, sha256 $$sha)"; \
+	canon="$$HOME/code/REPOS/sutra/sutra.py"; \
+	if [ -f "$$canon" ]; then \
+	    if cmp -s bin/sutra.py "$$canon"; then \
+	        echo "check-sutra: freshness ok (matches canonical)"; \
+	    else \
+	        echo "check-sutra FAIL: bin/sutra.py differs from canonical $$canon (re-vendor)"; \
+	        exit 1; \
+	    fi; \
+	fi
 
 bpf:
 	cd bpf && bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h

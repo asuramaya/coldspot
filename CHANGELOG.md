@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.5.0 — sutra backbone, SSH-signed releases, a real QuickSettings pill
+Four pieces of family-wide doctrine landing together, all behavior-preserving
+or additive — nothing here should change what coldspot already did for you.
+
+- **Adopted the sutra backbone.** Vendored `bin/sutra.py` (the family's
+  shared runtime skeleton) and swapped coldspotd's hand-rolled control
+  socket for `sutra.ControlServer`: every connection now gets its own
+  handler thread instead of sharing the metering loop's single thread, so a
+  slow probe or a stuck peer can no longer stall command responses (the same
+  class of bug the gateway-ping fix below band-aided, now closed
+  structurally). `atomic_write()` delegates to `sutra.write_status()`
+  (chmod/chown now land on the tmp file *before* the rename, closing even
+  the narrow transient-permission window the old order left). A single
+  `threading.Lock()` keeps every field the control socket and the metering
+  loop both touch (stance, budget, policies, day/session counters, ...)
+  exactly as serialized as when it was all one thread — verified with an
+  8-thread, 8-second concurrent `set`/`reset`/`policy` stress test on top of
+  the usual `make attack` run (repeated clean). `load_conf()` stays
+  coldspot's own (its `key=val` config format isn't what sutra's JSON loader
+  expects) and `_coldspot_authz()` stays a custom authz function (preserving
+  the dev/smoke bypass when the daemon itself isn't root). Adds
+  `make check-sutra` (integrity + freshness of the vendored copy), wired
+  into `make check`.
+- **Release signing migrated from minisign to SSH signatures (SSHSIG)**,
+  reusing the fleet's FIDO2 master identity instead of minting a
+  coldspot-only key (`release-signing/allowed_signers`, `make sync-signers`,
+  `docs/RELEASE-SIGNING.md`). `coldspot-update` (the unattended auto-update
+  timer) refuses to install anything with no key provisioned; `install.sh`'s
+  one-time bootstrap gained a signature check for the first time (it only
+  ever had sha256 before) with a graceful degrade until a key exists. The
+  anchor ships empty — nothing is enforced yet.
+- **The GNOME pill is a real QuickSettings tile now** (`QuickMenuToggle`/
+  `SystemIndicator`, matching kast/phanspeed), not a legacy panel button
+  with a static header block. The tile leads with live link health (signal
+  + a new gateway-ping/jitter/loss probe) on open/unmetered networks instead
+  of a meaningless "0 MB" budget line, and with budget/stance once something
+  is actually engaged.
+- Fixed a real bug the pill work surfaced: `iw` prints non-ASCII SSID bytes
+  as literal `\xHH` escape text instead of real UTF-8 — an emoji-named
+  network rendered as garbage. Fixed a real flake the gateway-ping addition
+  caused: on a gateway that never answers ICMP, the probe used to block the
+  daemon's (then single-threaded) accept loop for its own timeout on every
+  tick; backgrounded now, and moot besides once sutra owns the socket.
+
 ## 0.4.2 — honest installer
 Caught live: `sudo make install` silently added *root*, not the operator, to
 the `coldspot` group and staged the GNOME pill under `/root` — because

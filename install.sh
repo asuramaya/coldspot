@@ -148,6 +148,11 @@ echo "-- binaries -> $BINDIR"
 for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
   install -m 0755 -o root -g root "$SRC/bin/$b" "$BINDIR/$b"
 done
+# coldspotd/coldspot both `import sutra` as a sibling — vendored, never hand-
+# edited (bin/sutra.version is the drift anchor, see `make check-sutra`).
+# Python puts an invoked script's own dir on sys.path[0], so it has to live
+# right next to them in $BINDIR, not under $SHAREDIR.
+install -m 0644 -o root -g root "$SRC/bin/sutra.py" "$BINDIR/sutra.py"
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/VERSION" "$SHAREDIR/VERSION"
 

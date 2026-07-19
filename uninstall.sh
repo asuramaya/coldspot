@@ -46,6 +46,7 @@ echo "-- removing files"
 for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
   rm -f "$BINDIR/$b"
 done
+rm -f "$BINDIR/sutra.py"   # vendored sibling import, installed alongside coldspotd/coldspot
 rm -f "$UNITDIR/coldspotd.service" "$UNITDIR/coldspot-update.service" "$UNITDIR/coldspot-update.timer"
 rm -f /etc/sudoers.d/coldspot
 rm -rf "$SHAREDIR"

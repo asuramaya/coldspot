@@ -7,8 +7,9 @@ Boots its OWN sandboxed daemon the exact way tests/smoke.sh does — a copy of
 bin/coldspotd with /run/coldspot and /var/lib/coldspot sed-rewritten into a
 throwaway tempdir, run as the current unprivileged user with COLDSPOT_IFACE=lo.
 Nothing here touches the live /run/coldspot, systemd, or root: the daemon runs
-as you, so it skips the SO_PEERCRED gate and chmods the socket 0666 (see
-coldspotd main(): the `os.geteuid() == 0` branches are all bypassed).
+as you, so it skips the SO_PEERCRED gate (see _coldspot_authz's
+`os.geteuid() != 0` bypass) — the socket itself is still 0660
+(sutra.ControlServer's fixed mode), just with no group check applied.
 
 It then abuses the AF_UNIX control socket every way a hostile local peer could:
 oversized lines, raw/invalid-UTF-8 garbage, valid-JSON non-objects, unknown
@@ -23,21 +24,26 @@ Two buckets of results:
     Any failure exits nonzero.
   * WEAKNESSES — genuine daemon defects this harness *discovered* and reports
     for the maintainer. coldspotd cannot be fixed from here, so these do not
-    fail the run, but they are printed loudly and belong in the changelog:
+    fail the run, but they are printed loudly and belong in the changelog.
+    W1 and W2 below are historical (both fixed, commit 5a7c401) — phases 9
+    and 11 keep probing for them as regression coverage, not live findings:
       W1  a wrong-TYPE `budget` in `set` is accepted with {"ok":true}, then
           crashes the daemon on the next publish (100*used_mb/budget divides by
           a str/list/dict — the publish math runs OUTSIDE the socket
           try/except). Violates FAMILY.md doctrine #3 (hostile input -> {error},
           never a crash) and #6 (invariants enforced on socket sets).
-      W2  a half-open connection (connect, never send) blocks the single
-          accept-per-loop thread until the client closes — the accepted socket
-          has no recv timeout. A trivial local DoS: while held, no command is
-          served and status.json goes stale.
+      W2  (pre-sutra) a half-open connection (connect, never send) blocked the
+          single accept-per-loop thread until the client closed — the accepted
+          socket had no recv timeout, a trivial local DoS. Fixed twice over:
+          the original conn.settimeout() fix, then structurally obsoleted by
+          the sutra adoption (each connection gets its own handler thread now,
+          so one stuck peer can't stall any other connection regardless).
 
 Run as your normal user:  python3 tests/attack_socket.py   (or: make attack)
 """
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -76,6 +82,7 @@ _src = _src.replace("/run/coldspot", run_dir).replace("/var/lib/coldspot", run_d
 _daemon = os.path.join(run_dir, "coldspotd")
 with open(_daemon, "w") as f:
     f.write(_src)
+shutil.copy(os.path.join(HERE, "bin", "sutra.py"), os.path.join(run_dir, "sutra.py"))
 
 SOCK = os.path.join(run_dir, "control.sock")
 STATUS = os.path.join(run_dir, "status.json")
@@ -109,8 +116,11 @@ def daemon_alive():
 
 
 def daemon_threads():
-    """Thread count from /proc — coldspotd is single-threaded, so this must
-    stay 1; a climbing value would mean a leaked per-connection thread."""
+    """Thread count from /proc. Since the sutra adoption coldspotd is no
+    longer single-threaded (main + sutra.ControlServer's own accept thread,
+    baseline ~2, +1 transient per in-flight connection) — the checks below
+    compare relative growth, not an absolute count, so a climbing value still
+    means a leaked per-connection thread."""
     try:
         with open(f"/proc/{proc.pid}/status") as f:
             for line in f:

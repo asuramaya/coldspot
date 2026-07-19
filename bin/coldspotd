@@ -26,6 +26,8 @@ import threading
 import time
 from collections import deque
 
+import sutra
+
 RUN = "/run/coldspot"
 STATE = "/var/lib/coldspot"
 SOCK = f"{RUN}/control.sock"
@@ -1362,27 +1364,16 @@ def load_json(path, default):
 
 
 def atomic_write(path, obj):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(obj, f)
-    os.replace(tmp, path)
-    # sensitive state (status/policy/history/ledger/usage) — non-world-readable.
-    try:
-        os.chmod(path, 0o640)
-    except OSError:
-        pass
-    # The tmp file is created fresh each call, so it gets THIS PROCESS's group
-    # (root), not the parent directory's — directory setgid would normally fix
-    # that, but coldspotd.service's own RestrictSUIDSGID=yes silently blocks the
-    # setgid chmod on RUN/STATE below, so it never takes. Re-group explicitly
-    # instead of depending on inheritance: this is what actually keeps the CLI
-    # and GNOME pill (running as the user, in the `coldspot` group) able to
-    # read status.json et al.
-    if _CS_GID is not None:
-        try:
-            os.chown(path, -1, _CS_GID)
-        except OSError:
-            pass
+    """Sensitive state (status/policy/history/ledger/usage) — non-world-
+    readable, root:coldspot when the group exists. Delegates to sutra's
+    tmp+chmod+chown+rename (in that order — no window where the final path
+    exists at the wrong permissions/group, unlike this daemon's own former
+    chmod-then-chown-AFTER-rename, which relied on a matching umask instead).
+    `_CS_GID` is set once in main() when root + the `coldspot` group exist;
+    coldspotd.service's own RestrictSUIDSGID=yes blocks directory-setgid
+    inheritance, so every write re-groups explicitly rather than relying on
+    it — see the RUN/STATE setup in main()."""
+    sutra.write_status(path, obj, owner=(0, _CS_GID) if _CS_GID is not None else None)
 
 
 # --- privileged control socket: the daemon is the ONLY privileged actor -------
@@ -1439,32 +1430,41 @@ def _pid_alive(pid):
 
 
 def _reply(ok, err="helper failed"):
-    """Serialize a command result for the control socket."""
-    return json.dumps({"ok": True} if ok
-                      else {"ok": False, "err": err}).encode() + b"\n"
+    """A command result as a plain dict — sutra.ControlServer does the JSON
+    framing itself, so dispatch() just returns dicts now."""
+    return {"ok": True} if ok else {"ok": False, "err": err}
 
 
-def _peer_allowed(conn, cs_gid):
-    """SO_PEERCRED authorization: allow root, else a peer whose primary group is
-    `coldspot` or who is a listed member. DEFAULT DENY for any non-root peer we
-    can't positively verify. Only consulted when the daemon runs as root."""
-    try:
-        creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
-                                struct.calcsize("3i"))
-        _pid, uid, _gid = struct.unpack("3i", creds)
-    except OSError:
-        return False
+def _coldspot_authz(uid, _gid):
+    """sutra authz(uid, gid) -> bool: allow root, else a peer whose primary
+    group is `coldspot` or who is a listed member. DEFAULT DENY for any
+    non-root peer we can't positively verify. Dev/smoke (daemon itself isn't
+    root) skips the gate entirely and allows everyone — same as the old
+    call-site guard (`os.geteuid() == 0 and ...`), preserved here since
+    sutra.ControlServer always calls authz unconditionally."""
+    if os.geteuid() != 0:
+        return True
     if uid == 0:
         return True
-    if cs_gid is None:
+    if _CS_GID is None:
         return False
     try:
         pw = pwd.getpwuid(uid)
-        if pw.pw_gid == cs_gid:
+        if pw.pw_gid == _CS_GID:
             return True
         return pw.pw_name in grp.getgrnam("coldspot").gr_mem
     except (KeyError, OSError):
         return False
+
+
+def _read_daemon_version():
+    for p in ("/usr/local/share/coldspot/VERSION", "/usr/share/coldspot/VERSION",
+              os.path.join(HERE, "..", "VERSION")):
+        try:
+            return open(p).read().strip()
+        except OSError:
+            continue
+    return "unknown"
 
 
 def main():
@@ -1508,17 +1508,138 @@ def main():
     bonded_set = set()          # ifaces currently aggregated into an ECMP bond
     latency_hist = {}           # iface -> deque of recent gateway-ping RTTs (or None)
 
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        os.unlink(SOCK)
-    except OSError:
-        pass
-    srv.bind(SOCK)
+    st_lock = threading.Lock()   # guards every field dispatch() and the tick share
+    latest_status = {"doc": None}   # in-memory mirror of the last STATUS write,
+                                     # for sutra's "status" socket command
+
+    def dispatch(cmd, req):
+        """Everything the control socket accepts, now served by
+        sutra.ControlServer on its own thread(s) — ping/status are sutra's
+        job, this only ever sees the rest. `nonlocal` lets it rebind the same
+        names main()'s own tick body already uses; `st_lock` keeps the two
+        sides mutually exclusive over that shared state, exactly as
+        serialized as when it was all one thread. The 8 commands below the
+        first four never touch shared state (they only shell out to
+        coldspot-stance) — deliberately NOT locked, so a slow helper call
+        (stabilize/steer/bond can take seconds) can never stall a tick, the
+        same class of bug ping_bg() fixed for the gateway probe."""
+        nonlocal stance, budget, escalated, manual_override, auto_governed, \
+            applied_pol, applied_net, applied_sif, cur_net, conf, day, sess
+        if cmd == "set":
+            new_stance = req.get("stance")
+            if new_stance in STANCES:
+                with st_lock:
+                    stance = new_stance
+                    escalated = False  # a manual stance clears the auto latch
+                    # user took the wheel: pause auto-govern until the next roam,
+                    # and forget what the reconciler had applied (a manual stance
+                    # supersedes it) so policy re-establishes fresh on the roam.
+                    manual_override = True
+                    auto_governed = False
+                    applied_pol, applied_sif = None, None
+                # the CLI no longer sudo's — the daemon enforces the stance.
+                # Outside the lock: coldspot-stance can take real time, and
+                # nothing here needs its result (never did — see below).
+                enforce(new_stance)
+            if "budget" in req:
+                b = req["budget"]  # MB or None
+                # a non-numeric budget must be dropped here, not later: the
+                # publish step below does arithmetic on it unconditionally
+                # (100 * used_mb / budget), and a str/list/dict there is an
+                # uncaught TypeError that kills the daemon (doctrine #6).
+                if b is None or isinstance(b, (int, float)):
+                    with st_lock:
+                        budget = b
+                        escalated = False
+            with st_lock:
+                conf = load_conf()  # pick up config edits without a restart
+            return {"ok": True}
+        if cmd == "reset":
+            with st_lock:
+                if req.get("scope") == "day":
+                    day = {"rx": 0, "tx": 0}
+                else:
+                    sess = {"rx": 0, "tx": 0, "since": int(time.time())}
+                escalated = False
+            return {"ok": True}
+        if cmd == "policy":
+            # set coldspot's remembered policy for a network (its own truth)
+            p = req.get("policy")
+            with st_lock:
+                net = cur_net if req.get("here") else req.get("net")
+                if p in POLICIES and net and net != "?":
+                    policies[net] = {"policy": p, "source": "user",
+                                     "ts": int(time.time())}
+                    atomic_write(POLICY_DB, policies)
+                    manual_override = False   # hand it back to the reconciler
+                    applied_pol = None        # force re-apply next tick
+                    return {"ok": True}
+                return {"ok": False, "err": "bad net/policy"}
+        if cmd == "forget":
+            net = req.get("net")
+            with st_lock:
+                if net in policies:
+                    del policies[net]
+                    atomic_write(POLICY_DB, policies)
+                    applied_pol = None        # re-seed on the next tick
+            return {"ok": True}
+        # --- privileged ops the CLI used to sudo; now routed through here ---
+        if cmd == "uncap":
+            pid = req.get("pid")
+            if not _pid_alive(pid):
+                return _reply(False, "bad pid")
+            return _reply(_stance_helper("allow", str(pid)))
+        if cmd == "limit":
+            rate_bits = req.get("rate_bits")
+            lif = active_iface() or iface
+            if not (isinstance(rate_bits, int) and rate_bits > 0):
+                return _reply(False, "bad rate")
+            if not _iface_ok(lif, _net_ifaces()):
+                return _reply(False, "no iface")
+            return _reply(_stance_helper("limit", lif, str(rate_bits)))
+        if cmd == "unlimit":
+            lif = active_iface() or iface
+            if not _iface_ok(lif, _net_ifaces()):
+                return _reply(False, "no iface")
+            return _reply(_stance_helper("unlimit", lif))
+        if cmd == "stabilize":
+            sif, ul, dl = req.get("iface"), req.get("ul"), req.get("dl")
+            if not _iface_ok(sif, _net_ifaces()):
+                return _reply(False, "bad iface")
+            if not (isinstance(ul, int) and ul > 0
+                    and isinstance(dl, int) and dl > 0):
+                return _reply(False, "bad rates")
+            return _reply(_stance_helper("stabilize", sif, str(ul), str(dl)))
+        if cmd == "unstabilize":
+            sif = req.get("iface")
+            if not _iface_ok(sif, _net_ifaces()):
+                return _reply(False, "bad iface")
+            return _reply(_stance_helper("unstabilize", sif))
+        if cmd == "steer":
+            tif = req.get("iface")
+            if not _iface_ok(tif, _net_ifaces()):
+                return _reply(False, "bad iface")
+            return _reply(_stance_helper("steer", tif))
+        if cmd == "bond":
+            specs = req.get("specs")
+            known = _net_ifaces()
+            if not (isinstance(specs, list) and len(specs) >= 2
+                    and all(_bond_spec_ok(s, known) for s in specs)):
+                return _reply(False, "bad specs")
+            return _reply(_stance_helper("bond", *specs))
+        if cmd == "unbond":
+            return _reply(_stance_helper("unbond"))
+        return {"ok": True}   # unknown: the old benign catch-all, preserved
+
+    def get_status():
+        return latest_status["doc"] or {"error": "no status yet"}
+
     # The daemon is now the only privileged actor, so the socket carries real
-    # authority: lock it to root + the `coldspot` group (0660) and lock down the
-    # RUN/STATE dirs to match. DEV/TEST (euid!=0, e.g. the smoke test run as a
-    # normal user) keeps the old loose 0666 and no group ownership — the peer-cred
-    # gate below is skipped there too, preserving current dev behavior.
+    # authority: sutra.ControlServer locks it to root + the `coldspot` group
+    # (0660) via socket_owner, and _coldspot_authz gates callers the same way
+    # _peer_allowed used to. DEV/TEST (euid!=0, e.g. the smoke test run as a
+    # normal user) skips the gate entirely inside _coldspot_authz itself now
+    # (sutra always calls authz, so the old call-site bypass moved there).
     cs_gid = None
     if os.geteuid() == 0:
         try:
@@ -1528,8 +1649,6 @@ def main():
         if cs_gid is not None:
             global _CS_GID
             _CS_GID = cs_gid   # atomic_write() re-groups every state file it writes
-            os.chown(SOCK, 0, cs_gid)
-            os.chmod(SOCK, 0o660)
             # Group the dirs so the user can traverse them. NOT setgid: the
             # daemon's own RestrictSUIDSGID=yes (systemd) blocks any chmod that
             # sets S_ISGID, so a 02750 here would silently no-op anyway — group
@@ -1549,12 +1668,19 @@ def main():
                     os.chmod(fpath, 0o640)
                 except OSError:
                     pass
-        else:
-            os.chmod(SOCK, 0o600)   # no group -> root-only
-    else:
-        os.chmod(SOCK, 0o666)       # dev: unchanged (smoke runs as a user)
-    srv.listen()
-    srv.settimeout(SAMPLE)
+
+    ctl = sutra.ControlServer(SOCK, _coldspot_authz, _read_daemon_version(),
+                              dispatch, get_status,
+                              socket_owner=(0, cs_gid) if cs_gid is not None else None)
+    # sutra always leaves the socket at 0660; when running as root with no
+    # `coldspot` group to grant, that's WIDER than the old root-only 0600 —
+    # re-tighten this one edge case (a misconfigured/incomplete install).
+    if os.geteuid() == 0 and cs_gid is None:
+        try:
+            os.chmod(SOCK, 0o600)
+        except OSError:
+            pass
+    ctl.start()
 
     last = read_iface(iface)
     last_t = time.monotonic()
@@ -1563,382 +1689,257 @@ def main():
     talkers = []
     src = "proc"
     while True:
-        # 1) non-blocking control drain
-        try:
-            conn, _ = srv.accept()
-            # a peer that connects and never sends must not stall this
-            # single-threaded loop (accept()'s timeout above doesn't cover the
-            # accepted socket) — bound the read to one sample period.
-            conn.settimeout(SAMPLE)
-            # peer-cred gate (root only): accept a command ONLY from root or a
-            # member of the `coldspot` group; default-deny everything else. Dev
-            # (euid!=0) skips this entirely — preserving the smoke test.
-            if os.geteuid() == 0 and not _peer_allowed(conn, cs_gid):
-                conn.sendall(b'{"ok":false,"err":"unauthorized"}\n')
-                conn.close()
-                continue
-            try:
-                data = conn.recv(4096)
-            except socket.timeout:
-                conn.close()
-                continue
-            req = json.loads(data.split(b"\n", 1)[0] or b"{}")
-            cmd = req.get("cmd")
-            if cmd == "set":
-                if req.get("stance") in STANCES:
-                    stance = req["stance"]
-                    escalated = False  # a manual stance clears the auto latch
-                    # user took the wheel: pause auto-govern until the next roam,
-                    # and forget what the reconciler had applied (a manual stance
-                    # supersedes it) so policy re-establishes fresh on the roam.
-                    manual_override = True
-                    auto_governed = False
-                    applied_pol, applied_sif = None, None
-                    # the CLI no longer sudo's — the daemon enforces the stance.
-                    enforce(stance)
-                if "budget" in req:
-                    b = req["budget"]  # MB or None
-                    # a non-numeric budget must be dropped here, not later: the
-                    # publish step below does arithmetic on it unconditionally
-                    # (100 * used_mb / budget), and a str/list/dict there is an
-                    # uncaught TypeError that kills the daemon (doctrine #6).
-                    if b is None or isinstance(b, (int, float)):
-                        budget = b
-                        escalated = False
-                conf = load_conf()  # pick up config edits without a restart
-                conn.sendall(b'{"ok":true}\n')
-            elif cmd == "reset":
-                if req.get("scope") == "day":
-                    day = {"rx": 0, "tx": 0}
-                else:
-                    sess = {"rx": 0, "tx": 0, "since": int(time.time())}
-                escalated = False
-                conn.sendall(b'{"ok":true}\n')
-            elif cmd == "policy":
-                # set coldspot's remembered policy for a network (its own truth)
-                p = req.get("policy")
-                net = cur_net if req.get("here") else req.get("net")
-                if p in POLICIES and net and net != "?":
-                    policies[net] = {"policy": p, "source": "user",
-                                     "ts": int(time.time())}
-                    atomic_write(POLICY_DB, policies)
-                    manual_override = False   # hand it back to the reconciler
-                    applied_pol = None        # force re-apply next tick
-                    conn.sendall(b'{"ok":true}\n')
-                else:
-                    conn.sendall(b'{"ok":false,"err":"bad net/policy"}\n')
-            elif cmd == "forget":
-                net = req.get("net")
-                if net in policies:
-                    del policies[net]
-                    atomic_write(POLICY_DB, policies)
-                    applied_pol = None        # re-seed on the next tick
-                conn.sendall(b'{"ok":true}\n')
-            # --- privileged ops the CLI used to sudo; now routed through here ---
-            elif cmd == "uncap":
-                pid = req.get("pid")
-                if not _pid_alive(pid):
-                    conn.sendall(_reply(False, "bad pid"))
-                else:
-                    conn.sendall(_reply(_stance_helper("allow", str(pid))))
-            elif cmd == "limit":
-                rate = req.get("rate_bits")
-                lif = active_iface() or iface
-                if not (isinstance(rate, int) and rate > 0):
-                    conn.sendall(_reply(False, "bad rate"))
-                elif not _iface_ok(lif, _net_ifaces()):
-                    conn.sendall(_reply(False, "no iface"))
-                else:
-                    conn.sendall(_reply(_stance_helper("limit", lif, str(rate))))
-            elif cmd == "unlimit":
-                lif = active_iface() or iface
-                if not _iface_ok(lif, _net_ifaces()):
-                    conn.sendall(_reply(False, "no iface"))
-                else:
-                    conn.sendall(_reply(_stance_helper("unlimit", lif)))
-            elif cmd == "stabilize":
-                sif, ul, dl = req.get("iface"), req.get("ul"), req.get("dl")
-                if not _iface_ok(sif, _net_ifaces()):
-                    conn.sendall(_reply(False, "bad iface"))
-                elif not (isinstance(ul, int) and ul > 0
-                          and isinstance(dl, int) and dl > 0):
-                    conn.sendall(_reply(False, "bad rates"))
-                else:
-                    conn.sendall(_reply(
-                        _stance_helper("stabilize", sif, str(ul), str(dl))))
-            elif cmd == "unstabilize":
-                sif = req.get("iface")
-                if not _iface_ok(sif, _net_ifaces()):
-                    conn.sendall(_reply(False, "bad iface"))
-                else:
-                    conn.sendall(_reply(_stance_helper("unstabilize", sif)))
-            elif cmd == "steer":
-                tif = req.get("iface")
-                if not _iface_ok(tif, _net_ifaces()):
-                    conn.sendall(_reply(False, "bad iface"))
-                else:
-                    conn.sendall(_reply(_stance_helper("steer", tif)))
-            elif cmd == "bond":
-                specs = req.get("specs")
-                known = _net_ifaces()
-                if not (isinstance(specs, list) and len(specs) >= 2
-                        and all(_bond_spec_ok(s, known) for s in specs)):
-                    conn.sendall(_reply(False, "bad specs"))
-                else:
-                    conn.sendall(_reply(_stance_helper("bond", *specs)))
-            elif cmd == "unbond":
-                conn.sendall(_reply(_stance_helper("unbond")))
-            else:
-                conn.sendall(b'{"ok":true}\n')
-            conn.close()
-        except socket.timeout:
-            pass
-        except Exception:
-            pass
+        # control-socket handling now runs on sutra.ControlServer's own
+        # thread(s), entirely decoupled from this loop — a slow probe or
+        # helper call in here can no longer stall a client's connection.
+        with st_lock:
+            # 2) day rollover at local midnight
+            today = time.strftime("%Y-%m-%d")
+            if day.get("date") != today:
+                day = {"rx": 0, "tx": 0, "date": today}
+                ts_prune(ts)   # drop time-series rows past the retention window
 
-        # 2) day rollover at local midnight
-        today = time.strftime("%Y-%m-%d")
-        if day.get("date") != today:
-            day = {"rx": 0, "tx": 0, "date": today}
-            ts_prune(ts)   # drop time-series rows past the retention window
+            # 3) sample + delta (guard counter wrap / iface flap), derive live rate
+            now = time.monotonic()
+            cur = read_iface(iface)
+            if cur and last:
+                drx, dtx = cur[0] - last[0], cur[1] - last[1]
+                dt = max(now - last_t, 0.001)
+                if drx >= 0 and dtx >= 0:
+                    rate = {"rx": round(drx / dt), "tx": round(dtx / dt)}
+                    # per-connection history tracks every link (Brick AND home), so
+                    # you can see where the month went; the budget still counts only
+                    # the metered link.
+                    if link_name:
+                        history_add(history, link_name, metered, today, drx, dtx)
+                    if metered:   # only count usage on the metered connection
+                        sess["rx"] += drx
+                        sess["tx"] += dtx
+                        day["rx"] += drx
+                        day["tx"] += dtx
+            last, last_t = cur or last, now
 
-        # 3) sample + delta (guard counter wrap / iface flap), derive live rate
-        now = time.monotonic()
-        cur = read_iface(iface)
-        if cur and last:
-            drx, dtx = cur[0] - last[0], cur[1] - last[1]
-            dt = max(now - last_t, 0.001)
-            if drx >= 0 and dtx >= 0:
-                rate = {"rx": round(drx / dt), "tx": round(dtx / dt)}
-                # per-connection history tracks every link (Brick AND home), so
-                # you can see where the month went; the budget still counts only
-                # the metered link.
-                if link_name:
-                    history_add(history, link_name, metered, today, drx, dtx)
-                if metered:   # only count usage on the metered connection
-                    sess["rx"] += drx
-                    sess["tx"] += dtx
-                    day["rx"] += drx
-                    day["tx"] += dtx
-        last, last_t = cur or last, now
+            # 4) per-app attribution: prefer the BPF core, else systemd (every ~5th)
+            talk_tick = (talk_tick + 1) % 5
+            if talk_tick == 1:
+                # follow the link actually carrying traffic (the default route), not a
+                # fixed 'metered device' pinned at startup. On a multi-homed host the
+                # two diverge, and byte accounting / the BPF pin must track the wire in
+                # use — else we meter an idle radio while traffic sails by uncounted.
+                new_iface = active_iface() or iface
+                new_metered, new_link = _link_state(new_iface)  # roam OR active switch
+                if new_iface != iface or (new_metered, new_link) != (metered, link_name):
+                    # the BPF attribution maps still hold the previous link's bytes
+                    # (kernel gates by ifindex) — clear them so talkers/flows track
+                    # only the new link, re-prime the ledger, and reset the byte
+                    # baseline so the next delta isn't across two different ifaces.
+                    bpf_reset_usage()
+                    talkers, flows = [], []
+                    prev_proc, proc_primed = {}, False
+                    manual_override = False   # new link -> the reconciler re-decides
+                    last = None               # re-prime rate/session baseline on switch
+                iface, metered, link_name = new_iface, new_metered, new_link
 
-        # 4) per-app attribution: prefer the BPF core, else systemd (every ~5th)
-        talk_tick = (talk_tick + 1) % 5
-        if talk_tick == 1:
-            # follow the link actually carrying traffic (the default route), not a
-            # fixed 'metered device' pinned at startup. On a multi-homed host the
-            # two diverge, and byte accounting / the BPF pin must track the wire in
-            # use — else we meter an idle radio while traffic sails by uncounted.
-            new_iface = active_iface() or iface
-            new_metered, new_link = _link_state(new_iface)  # roam OR active switch
-            if new_iface != iface or (new_metered, new_link) != (metered, link_name):
-                # the BPF attribution maps still hold the previous link's bytes
-                # (kernel gates by ifindex) — clear them so talkers/flows track
-                # only the new link, re-prime the ledger, and reset the byte
-                # baseline so the next delta isn't across two different ifaces.
-                bpf_reset_usage()
-                talkers, flows = [], []
-                prev_proc, proc_primed = {}, False
-                manual_override = False   # new link -> the reconciler re-decides
-                last = None               # re-prime rate/session baseline on switch
-            iface, metered, link_name = new_iface, new_metered, new_link
+                # sense layer 1/2 FIRST — the reconciler below keys on the active
+                # link's SSID, so links must be fresh before it runs (else it'd fall
+                # back to a connection name and pollute the policy store).
+                links = read_links(active_iface())
+                act_if = next((i for i, v in links.items() if v.get("active")), None)
+                if act_if:
+                    ts_record_link(ts, time.strftime("%Y-%m-%dT%H"), act_if,
+                                   link_name, links[act_if])
+                # egress-IP independence (for bonding): only meaningful with 2+ links.
+                # Probe one stale link per tick, cache 5 min — distinct public IPs =
+                # independent backhauls. Cheap and lazy; skipped entirely on one link.
+                conn_ifs = [i for i, h in links.items() if h.get("connected")]
+                if conf.get("auto_bond", False) and len(conn_ifs) >= 2:
+                    stale = [i for i in conn_ifs
+                             if now - egress_cache.get(i, (None, 0.0))[1] > 300]
+                    if stale:   # short timeout: this blocks the loop, so keep it tiny
+                        egress_cache[stale[0]] = (link_egress_ip(stale[0], 3), now)
+                for i, h in links.items():
+                    h["egress_ip"] = egress_cache.get(i, (None, 0.0))[0]
 
-            # sense layer 1/2 FIRST — the reconciler below keys on the active
-            # link's SSID, so links must be fresh before it runs (else it'd fall
-            # back to a connection name and pollute the policy store).
-            links = read_links(active_iface())
-            act_if = next((i for i, v in links.items() if v.get("active")), None)
-            if act_if:
-                ts_record_link(ts, time.strftime("%Y-%m-%dT%H"), act_if,
-                               link_name, links[act_if])
-            # egress-IP independence (for bonding): only meaningful with 2+ links.
-            # Probe one stale link per tick, cache 5 min — distinct public IPs =
-            # independent backhauls. Cheap and lazy; skipped entirely on one link.
-            conn_ifs = [i for i, h in links.items() if h.get("connected")]
-            if conf.get("auto_bond", False) and len(conn_ifs) >= 2:
-                stale = [i for i in conn_ifs
-                         if now - egress_cache.get(i, (None, 0.0))[1] > 300]
-                if stale:   # short timeout: this blocks the loop, so keep it tiny
-                    egress_cache[stale[0]] = (link_egress_ip(stale[0], 3), now)
-            for i, h in links.items():
-                h["egress_ip"] = egress_cache.get(i, (None, 0.0))[0]
+                # local-link latency/jitter/loss — the gateway hop only, never a
+                # third party (see ping_once's doctrine note). Independent of the
+                # metered/budget axis, so it's just as meaningful for judging a
+                # home network as a hotspot one. ~Every 10s (this block's cadence).
+                # Backgrounded (ping_bg): a gateway that never replies to ICMP
+                # must not stall this loop's control-socket handling while it
+                # waits out ping_once's own timeout every single tick.
+                if conf.get("latency_probe", True) and act_if:
+                    hist = latency_hist.setdefault(act_if, deque(maxlen=15))
+                    ping_bg(default_gateway(), hist)
+                    lat_ms, jit_ms, loss_pct = latency_stats(hist)
+                    links[act_if]["latency_ms"] = lat_ms
+                    links[act_if]["jitter_ms"] = jit_ms
+                    links[act_if]["loss_pct"] = loss_pct
 
-            # local-link latency/jitter/loss — the gateway hop only, never a
-            # third party (see ping_once's doctrine note). Independent of the
-            # metered/budget axis, so it's just as meaningful for judging a
-            # home network as a hotspot one. ~Every 10s (this block's cadence).
-            # Backgrounded (ping_bg): a gateway that never replies to ICMP
-            # must not stall this loop's control-socket handling while it
-            # waits out ping_once's own timeout every single tick.
-            if conf.get("latency_probe", True) and act_if:
-                hist = latency_hist.setdefault(act_if, deque(maxlen=15))
-                ping_bg(default_gateway(), hist)
-                lat_ms, jit_ms, loss_pct = latency_stats(hist)
-                links[act_if]["latency_ms"] = lat_ms
-                links[act_if]["jitter_ms"] = jit_ms
-                links[act_if]["loss_pct"] = loss_pct
+                # populate the `critical` BPF map BEFORE the reconciler can enforce
+                # cold this tick — else NM/DNS/updates could be throttled in the
+                # window between applying cold and mapping the critical cgroups.
+                set_critical_cgroups()
 
-            # populate the `critical` BPF map BEFORE the reconciler can enforce
-            # cold this tick — else NM/DNS/updates could be throttled in the
-            # window between applying cold and mapping the critical cgroups.
-            set_critical_cgroups()
-
-            # policy reconciler: coldspot applies ITS remembered policy for this
-            # network (not a live re-read of the metered flag). New networks get
-            # seeded from the two axes — metered->cold, weak signal->stabilize —
-            # and remembered. A manual stance (`coldspot cold/open`) pauses this
-            # until the next roam; `coldspot open` is always the panic release.
-            net = active_net(links, link_name)
-            if net:
-                cur_net = net       # keep last-known when a tick can't identify it
-            if conf.get("auto_govern", True) and not manual_override and net:
-                sif, shealth = _active(links)
-                pol, seeded = policy_decide(policies, net, metered,
-                                            (shealth or {}).get("score"))
-                if seeded:
-                    atomic_write(POLICY_DB, policies)
-                # re-apply on a policy/network change, OR when stabilize's active
-                # iface moved under it (failover between radios on the same SSID)
-                moved = (pol == "stabilize" and sif and sif != applied_sif)
-                if (pol, net) != (applied_pol, applied_net) or moved:
-                    # tear down the previous policy's overlay before applying new
-                    if applied_pol == "stabilize" and applied_sif:
-                        daemon_unstabilize(applied_sif)
-                        applied_sif = None
-                    ok = True
-                    if pol == "cold":
-                        ok = enforce("cold")
-                        if ok:
-                            stance = "cold"
-                    elif pol == "open":
-                        ok = enforce("open")
-                        if ok:
+                # policy reconciler: coldspot applies ITS remembered policy for this
+                # network (not a live re-read of the metered flag). New networks get
+                # seeded from the two axes — metered->cold, weak signal->stabilize —
+                # and remembered. A manual stance (`coldspot cold/open`) pauses this
+                # until the next roam; `coldspot open` is always the panic release.
+                net = active_net(links, link_name)
+                if net:
+                    cur_net = net       # keep last-known when a tick can't identify it
+                if conf.get("auto_govern", True) and not manual_override and net:
+                    sif, shealth = _active(links)
+                    pol, seeded = policy_decide(policies, net, metered,
+                                                (shealth or {}).get("score"))
+                    if seeded:
+                        atomic_write(POLICY_DB, policies)
+                    # re-apply on a policy/network change, OR when stabilize's active
+                    # iface moved under it (failover between radios on the same SSID)
+                    moved = (pol == "stabilize" and sif and sif != applied_sif)
+                    if (pol, net) != (applied_pol, applied_net) or moved:
+                        # tear down the previous policy's overlay before applying new
+                        if applied_pol == "stabilize" and applied_sif:
+                            daemon_unstabilize(applied_sif)
+                            applied_sif = None
+                        ok = True
+                        if pol == "cold":
+                            ok = enforce("cold")
+                            if ok:
+                                stance = "cold"
+                        elif pol == "open":
+                            ok = enforce("open")
+                            if ok:
+                                stance = "open"
+                        elif pol == "stabilize":
+                            enforce("open")          # clear any cold shaper first
                             stance = "open"
-                    elif pol == "stabilize":
-                        enforce("open")          # clear any cold shaper first
-                        stance = "open"
-                        ok = bool(sif) and daemon_stabilize(sif, shealth)
-                        if ok:
-                            applied_sif = sif
-                    if ok:                        # commit; else retry next tick
-                        applied_pol, applied_net = pol, net
-                        auto_governed = (pol != "open")
+                            ok = bool(sif) and daemon_stabilize(sif, shealth)
+                            if ok:
+                                applied_sif = sif
+                        if ok:                        # commit; else retry next tick
+                            applied_pol, applied_net = pol, net
+                            auto_governed = (pol != "open")
 
-            # auto-bond: aggregate 2+ healthy, independent-backhaul links into a
-            # weighted ECMP default route (bulk hashes across them). Health-gated
-            # by bond_plan, so a weak radio never enters the hash. Opt-in.
-            plan = bond_plan(links) if conf.get("auto_bond", False) else []
-            want_bond = {i for i, _ in plan} if len(plan) >= 2 else set()
-            if want_bond:
-                if want_bond != bonded_set:
-                    specs = [f"{i}:{w}" for i, w in plan]
-                    if _stance_helper("bond", *specs):
-                        bonded_set = want_bond
-            elif bonded_set:
-                _stance_helper("unbond")
-                bonded_set = set()
+                # auto-bond: aggregate 2+ healthy, independent-backhaul links into a
+                # weighted ECMP default route (bulk hashes across them). Health-gated
+                # by bond_plan, so a weak radio never enters the hash. Opt-in.
+                plan = bond_plan(links) if conf.get("auto_bond", False) else []
+                want_bond = {i for i, _ in plan} if len(plan) >= 2 else set()
+                if want_bond:
+                    if want_bond != bonded_set:
+                        specs = [f"{i}:{w}" for i, w in plan]
+                        if _stance_helper("bond", *specs):
+                            bonded_set = want_bond
+                elif bonded_set:
+                    _stance_helper("unbond")
+                    bonded_set = set()
 
-            # auto-steer: keep the primary route on the healthiest radio, entirely
-            # hands-free. Instant failover if the primary died; otherwise a rival
-            # must stay CLEARLY better for STEER_HYSTERESIS ticks AND clear the
-            # cooldown before we switch — so two near-equal radios never ping-pong.
-            # Skipped while bonded (the bond owns the default route).
-            if not bonded_set and conf.get("auto_steer", True) and links:
-                ranked = rank_links(links)
-                best = ranked[0] if ranked else None
-                prim_h = links.get(act_if)
-                prim_dead = not (prim_h and prim_h.get("connected"))
-                if best and best != act_if and steer_better(links[best], prim_h):
-                    steer_streak += 1
+                # auto-steer: keep the primary route on the healthiest radio, entirely
+                # hands-free. Instant failover if the primary died; otherwise a rival
+                # must stay CLEARLY better for STEER_HYSTERESIS ticks AND clear the
+                # cooldown before we switch — so two near-equal radios never ping-pong.
+                # Skipped while bonded (the bond owns the default route).
+                if not bonded_set and conf.get("auto_steer", True) and links:
+                    ranked = rank_links(links)
+                    best = ranked[0] if ranked else None
+                    prim_h = links.get(act_if)
+                    prim_dead = not (prim_h and prim_h.get("connected"))
+                    if best and best != act_if and steer_better(links[best], prim_h):
+                        steer_streak += 1
+                    else:
+                        steer_streak = 0
+                    if best and best != act_if and (prim_dead or steer_streak >= STEER_HYSTERESIS) \
+                            and (prim_dead or (now - last_steer_t) > STEER_COOLDOWN):
+                        if _stance_helper("steer", best):
+                            last_steer_t, steer_streak = now, 0
+
+                raw = read_proc_raw()
+                if raw is not None:
+                    tk = proc_talkers(raw)                     # per-process (best)
+                    if proc_primed:
+                        deltas = proc_deltas(prev_proc, raw)
+                        ledger_add(ledger, deltas, today)
+                        ts_record(ts, time.strftime("%Y-%m-%dT%H"),
+                                  link_name, metered, deltas)
+                        attach_rates(tk, raw, prev_proc, max(now - last_attr_t, 0.001))
+                    talkers, src = tk, "proc"
+                    prev_proc, proc_primed = raw, True
+                    last_attr_t = now
                 else:
-                    steer_streak = 0
-                if best and best != act_if and (prim_dead or steer_streak >= STEER_HYSTERESIS) \
-                        and (prim_dead or (now - last_steer_t) > STEER_COOLDOWN):
-                    if _stance_helper("steer", best):
-                        last_steer_t, steer_streak = now, 0
+                    cg = read_bpf_usage()
+                    if cg is not None:
+                        talkers, src = cg, "cgroup"       # per-cgroup
+                    else:
+                        talkers, src = read_app_usage(), "systemd"
+                read_dns_names(dns_names)
+                flows_full = read_flows_raw(dns_names)
+                if flows_full:
+                    enrich_unknown_flows(flows_full)  # name pre-load connections
+                flows = flows_full[:20] if flows_full else []
+                attr_n += 1
+                if attr_n % 6 == 1:   # ~once a minute: learned per-app anomalies
+                    anomalies = detect_anomalies(ts, today, conf)
+                advice = advise(flows_full, conf) + anomalies   # nudges + anomalies
+                set_metered_cfg(iface)   # keep the core pinned to the metered link
+                history_prune(history)
+                ledger_prune(ledger)
+                atomic_write(HISTORY_DB, history)
+                atomic_write(LEDGER_DB, ledger)
 
-            raw = read_proc_raw()
-            if raw is not None:
-                tk = proc_talkers(raw)                     # per-process (best)
-                if proc_primed:
-                    deltas = proc_deltas(prev_proc, raw)
-                    ledger_add(ledger, deltas, today)
-                    ts_record(ts, time.strftime("%Y-%m-%dT%H"),
-                              link_name, metered, deltas)
-                    attach_rates(tk, raw, prev_proc, max(now - last_attr_t, 0.001))
-                talkers, src = tk, "proc"
-                prev_proc, proc_primed = raw, True
-                last_attr_t = now
-            else:
-                cg = read_bpf_usage()
-                if cg is not None:
-                    talkers, src = cg, "cgroup"       # per-cgroup
-                else:
-                    talkers, src = read_app_usage(), "systemd"
-            read_dns_names(dns_names)
-            flows_full = read_flows_raw(dns_names)
-            if flows_full:
-                enrich_unknown_flows(flows_full)  # name pre-load connections
-            flows = flows_full[:20] if flows_full else []
-            attr_n += 1
-            if attr_n % 6 == 1:   # ~once a minute: learned per-app anomalies
-                anomalies = detect_anomalies(ts, today, conf)
-            advice = advise(flows_full, conf) + anomalies   # nudges + anomalies
-            set_metered_cfg(iface)   # keep the core pinned to the metered link
-            history_prune(history)
-            ledger_prune(ledger)
-            atomic_write(HISTORY_DB, history)
-            atomic_write(LEDGER_DB, ledger)
+            # 5) budget + publish
+            used_mb = (sess["rx"] + sess["tx"]) / 1e6
+            pct = round(100 * used_mb / budget) if budget else None
+            bstate, eta = "off", None
+            if budget:
+                bstate = "over" if pct >= 100 else "warn" if pct >= 80 else "ok"
+                eta = budget_eta(sess["rx"] + sess["tx"], budget * 1e6,
+                                 int(time.time()) - sess["since"], time.time())
 
-        # 5) budget + publish
-        used_mb = (sess["rx"] + sess["tx"]) / 1e6
-        pct = round(100 * used_mb / budget) if budget else None
-        bstate, eta = "off", None
-        if budget:
-            bstate = "over" if pct >= 100 else "warn" if pct >= 80 else "ok"
-            eta = budget_eta(sess["rx"] + sess["tx"], budget * 1e6,
-                             int(time.time()) - sess["since"], time.time())
+            # budget auto-escalation: cross the ceiling -> siege, once, if armed
+            if bstate == "over" and conf["auto_siege"] and stance != "siege" \
+                    and not escalated:
+                if enforce("siege"):
+                    stance, escalated = "siege", True
 
-        # budget auto-escalation: cross the ceiling -> siege, once, if armed
-        if bstate == "over" and conf["auto_siege"] and stance != "siege" \
-                and not escalated:
-            if enforce("siege"):
-                stance, escalated = "siege", True
+            active_health = links.get(act_if, {})
+            status_doc = {
+                "iface": iface, "connection": link_name, "metered": metered,
+                "stance": stance, "source": src,
+                "latency_ms": active_health.get("latency_ms"),
+                "jitter_ms": active_health.get("jitter_ms"),
+                "loss_pct": active_health.get("loss_pct"),
+                "auto_siege": conf["auto_siege"], "rate_bps": rate,
+                "auto_govern": conf.get("auto_govern", True), "governed": auto_governed,
+                "cap_bits": conf.get("cold_cap_bits") if stance == "cold" else None,
+                "network": cur_net, "policy": applied_pol,
+                "stabilized": applied_sif is not None, "policies": policies,
+                "primary": next((i for i, h in links.items() if h.get("active")), None),
+                "best_link": (rank_links(links) or [None])[0],
+                "auto_steer": conf.get("auto_steer", True),
+                "auto_bond": conf.get("auto_bond", False),
+                "bonded": sorted(bonded_set),
+                "bondable": bond_plan(links),   # [[iface, weight], ...]
+                "flows": flows,
+                "session": {"rx_mb": round(sess["rx"] / 1e6, 1),
+                            "tx_mb": round(sess["tx"] / 1e6, 1),
+                            "since": sess["since"]},
+                "day": {"rx_mb": round(day["rx"] / 1e6, 1),
+                        "tx_mb": round(day["tx"] / 1e6, 1)},
+                "budget": {"limit_mb": budget, "used_mb": round(used_mb, 1),
+                           "pct": pct, "state": bstate, "eta": eta},
+                "talkers": talkers,
+                "links": links,
+                "history": history_summary(history, today),
+                "ledger": ledger_top(ledger, today),
+                "advice": advice,
+                "ts": int(time.time()),
+            }
+            atomic_write(STATUS, status_doc)
+            latest_status["doc"] = status_doc
+            atomic_write(DAY_DB, day)
 
-        active_health = links.get(act_if, {})
-        atomic_write(STATUS, {
-            "iface": iface, "connection": link_name, "metered": metered,
-            "stance": stance, "source": src,
-            "latency_ms": active_health.get("latency_ms"),
-            "jitter_ms": active_health.get("jitter_ms"),
-            "loss_pct": active_health.get("loss_pct"),
-            "auto_siege": conf["auto_siege"], "rate_bps": rate,
-            "auto_govern": conf.get("auto_govern", True), "governed": auto_governed,
-            "cap_bits": conf.get("cold_cap_bits") if stance == "cold" else None,
-            "network": cur_net, "policy": applied_pol,
-            "stabilized": applied_sif is not None, "policies": policies,
-            "primary": next((i for i, h in links.items() if h.get("active")), None),
-            "best_link": (rank_links(links) or [None])[0],
-            "auto_steer": conf.get("auto_steer", True),
-            "auto_bond": conf.get("auto_bond", False),
-            "bonded": sorted(bonded_set),
-            "bondable": bond_plan(links),   # [[iface, weight], ...]
-            "flows": flows,
-            "session": {"rx_mb": round(sess["rx"] / 1e6, 1),
-                        "tx_mb": round(sess["tx"] / 1e6, 1),
-                        "since": sess["since"]},
-            "day": {"rx_mb": round(day["rx"] / 1e6, 1),
-                    "tx_mb": round(day["tx"] / 1e6, 1)},
-            "budget": {"limit_mb": budget, "used_mb": round(used_mb, 1),
-                       "pct": pct, "state": bstate, "eta": eta},
-            "talkers": talkers,
-            "links": links,
-            "history": history_summary(history, today),
-            "ledger": ledger_top(ledger, today),
-            "advice": advice,
-            "ts": int(time.time()),
-        })
-        atomic_write(DAY_DB, day)
+        time.sleep(SAMPLE)
 
 
 if __name__ == "__main__":

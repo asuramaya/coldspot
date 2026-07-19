@@ -13,6 +13,7 @@ bash -n "$HERE/install.sh" && bash -n "$HERE/uninstall.sh" && echo "install pars
 # run the daemon in a throwaway runtime dir as the current user
 RUN="$(mktemp -d)"; export RUN
 sed "s#/run/coldspot#$RUN#; s#/var/lib/coldspot#$RUN#" "$HERE/bin/coldspotd" > "$RUN/d"
+cp "$HERE/bin/sutra.py" "$RUN/sutra.py"   # coldspotd imports it as a sibling
 python3 "$RUN/d" & D=$!
 trap 'kill $D 2>/dev/null || true; rm -rf "$RUN"' EXIT
 for _ in $(seq 1 10); do [[ -e "$RUN/status.json" ]] && break; sleep 0.5; done

@@ -8,8 +8,13 @@ import importlib.util
 import os
 import socket
 import struct
+import sys
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# coldspotd does `import sutra` as a sibling (vendored into bin/, same as a
+# real invocation would see it on sys.path[0]) — SourceFileLoader doesn't add
+# that automatically, so it's added explicitly before exec_module below.
+sys.path.insert(0, os.path.join(HERE, "bin"))
 _loader = importlib.machinery.SourceFileLoader(
     "coldspotd", os.path.join(HERE, "bin", "coldspotd"))
 _spec = importlib.util.spec_from_loader("coldspotd", _loader)
