@@ -22,6 +22,7 @@ import sqlite3
 import statistics
 import struct
 import subprocess
+import threading
 import time
 from collections import deque
 
@@ -188,6 +189,28 @@ def ping_once(host, timeout=1.0):
         return None
     m = re.search(r"time[=<]([\d.]+)\s*ms", out)
     return float(m.group(1)) if m else None
+
+
+_ping_lock = threading.Lock()
+
+
+def ping_bg(host, hist):
+    """Fire-and-forget one gateway ping into a background thread, appending
+    the result to `hist` when it lands. The main loop is single-threaded and
+    interleaves control-socket handling with sampling ticks; a gateway that
+    just doesn't answer ICMP (real, observed case: some routers/hotspots
+    never reply) would otherwise block that whole loop — including the
+    socket — for close to ping_once's own timeout, every single probe tick.
+    The trylock skips a tick outright rather than piling up threads if a
+    previous probe is somehow still in flight."""
+    if not _ping_lock.acquire(blocking=False):
+        return
+    def _run():
+        try:
+            hist.append(ping_once(host))
+        finally:
+            _ping_lock.release()
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def latency_stats(hist):
@@ -1744,9 +1767,12 @@ def main():
             # third party (see ping_once's doctrine note). Independent of the
             # metered/budget axis, so it's just as meaningful for judging a
             # home network as a hotspot one. ~Every 10s (this block's cadence).
+            # Backgrounded (ping_bg): a gateway that never replies to ICMP
+            # must not stall this loop's control-socket handling while it
+            # waits out ping_once's own timeout every single tick.
             if conf.get("latency_probe", True) and act_if:
                 hist = latency_hist.setdefault(act_if, deque(maxlen=15))
-                hist.append(ping_once(default_gateway()))
+                ping_bg(default_gateway(), hist)
                 lat_ms, jit_ms, loss_pct = latency_stats(hist)
                 links[act_if]["latency_ms"] = lat_ms
                 links[act_if]["jitter_ms"] = jit_ms

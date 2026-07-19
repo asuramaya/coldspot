@@ -91,7 +91,10 @@ verify_release_tarball() {
   curl -fsSL "${base}/coldspot.tar.gz.sha256.sig" -o "$sig" \
     || { echo "could not fetch release signature; refusing unsigned install." >&2; exit 1; }
   signers="$tmp/allowed_signers"
-  printf '%s\n' "$RELEASE_ALLOWED_SIGNERS" > "$signers"
+  # No added newline: RELEASE_ALLOWED_SIGNERS is embedded byte-for-byte from
+  # the anchor file by `make sync-signers`, trailing newline included — that
+  # exact-copy invariant is what CI's signing-sync check enforces.
+  printf '%s' "$RELEASE_ALLOWED_SIGNERS" > "$signers"
   if ! ssh-keygen -Y verify -f "$signers" -I "$SIGN_PRINCIPAL" -n "$SIGN_NAMESPACE" \
         -s "$sig" < "$sums" >/dev/null 2>&1; then
     echo "signature verification FAILED; refusing to install." >&2; exit 1
