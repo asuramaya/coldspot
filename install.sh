@@ -35,7 +35,10 @@ SIGN_NAMESPACE="coldspot-release"
 # with a printed warning rather than refusing to install outright — this is a
 # one-time, human-typed `sudo` action, not the unattended daily updater
 # (coldspot-update), which has the stricter no-key-no-install policy.
-RELEASE_ALLOWED_SIGNERS=''
+RELEASE_ALLOWED_SIGNERS='coldspot namespaces="coldspot-release,pills-tag" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAvqlv848gk9uzM40ZsFZTQeXsQKpxYaK4Fi8ubNl1H7AAAAFnNzaDphc3VyYW1heWEtbWFzdGVyLTE= ra-master-1
+coldspot namespaces="coldspot-release,pills-tag" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIFJBKAsk6b4YR2UH/UZ1Rk24PxepTYNkF7zflo01AmlZAAAAFnNzaDphc3VyYW1heWEtbWFzdGVyLTI= ra-master-2
+coldspot namespaces="coldspot-release,pills-tag" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIHTVqgo3ARbpTq04YlQksobfGIbBAw21nbE6HyeCPgxBAAAAFnNzaDphc3VyYW1heWEtbWFzdGVyLTM= ra-master-3
+coldspot namespaces="coldspot-release,pills-tag" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIP15ZeSJYWryHN2WEHDlJbWk/vA+j5JFgb9RSzT1SHveAAAAFnNzaDphc3VyYW1heWEtbWFzdGVyLTQ= ra-master-4'
 
 # ---- root, checked FIRST, before any download --------------------------
 # Fail fast and plainly rather than self-elevating: `curl | bash` without sudo
