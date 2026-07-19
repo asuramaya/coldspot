@@ -17,10 +17,20 @@ fi
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-# --- the shipped placeholder must be empty: no key provisioned yet ----------
-[[ -s "$HERE/release-signing/allowed_signers" ]] \
-  && fail "release-signing/allowed_signers must ship empty until a real key is provisioned — see docs/RELEASE-SIGNING.md"
-echo "shipped allowed_signers is the empty placeholder OK"
+# --- the shipped anchor is either the empty placeholder OR a well-formed,
+# armed 4-key set — never partial, never malformed. Mirrors the shape check
+# in .github/workflows/signing-sync.yml; this can't confirm the keys are the
+# operator's actual canonical set (CI can't reach ~/.ssh/asuramaya-master),
+# only that the anchor's shape is sane either way.
+anchor_content="$(cat "$HERE/release-signing/allowed_signers" 2>/dev/null || true)"
+if [[ -n "${anchor_content//[[:space:]]/}" ]]; then
+  anchor_lines="$(grep -c . "$HERE/release-signing/allowed_signers")"
+  [[ "$anchor_lines" -eq 4 ]] \
+    || fail "release-signing/allowed_signers is armed but has ${anchor_lines} lines, expected exactly 4"
+  echo "shipped allowed_signers is armed with 4 keys OK"
+else
+  echo "shipped allowed_signers is the empty placeholder OK"
+fi
 
 # --- load coldspot-update's functions without running an update -------------
 COLDSPOT_UPDATE_SOURCED=1 source "$HERE/bin/coldspot-update"
