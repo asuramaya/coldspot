@@ -5,6 +5,12 @@ After=network.target NetworkManager.service
 
 [Service]
 Type=simple
+# Load and attach the v1 BPF core before the daemon starts, on every start
+# (boot AND restart — bpffs pins never survive either). Leading `-` makes it
+# non-fatal: no clang/bpftool, no BTF, or a load failure all just leave the
+# core unloaded and coldspotd falls back to v0 (systemd/proc) metering, same
+# as if this line didn't exist.
+ExecStartPre=-/usr/local/bin/coldspot-bpf load
 ExecStart=/usr/local/bin/coldspotd
 Restart=on-failure
 RestartSec=2
