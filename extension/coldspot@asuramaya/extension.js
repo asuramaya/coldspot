@@ -133,18 +133,23 @@ class ColdspotToggle extends QuickMenuToggle {
         this.menu.addMenuItem(this._network);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // stance switcher — chips, one tap, current one lit
+        // stance switcher — chips, one tap, current one lit. 2x2 (not 1x4):
+        // four across left no room for a text label next to the glyph, just
+        // the glyph alone — unreadable without memorizing ○/◐/❄/●.
         this._stanceItems = {};
-        const stanceRow = new PopupMenu.PopupBaseMenuItem({ reactive: false, can_focus: false });
-        const stanceBox = new St.BoxLayout({ x_expand: true });
-        for (const [name, glyph] of STANCES) {
-            const btn = new St.Button({ label: glyph, x_expand: true, can_focus: true, style: CHIP });
-            btn.connect('clicked', () => this._run([COLDSPOT, name]));
-            stanceBox.add_child(btn);
-            this._stanceItems[name] = btn;
+        for (let i = 0; i < STANCES.length; i += 2) {
+            const stanceRow = new PopupMenu.PopupBaseMenuItem({ reactive: false, can_focus: false });
+            const stanceBox = new St.BoxLayout({ x_expand: true });
+            for (const [name, glyph] of STANCES.slice(i, i + 2)) {
+                const label = `${glyph}  ${name[0].toUpperCase()}${name.slice(1)}`;
+                const btn = new St.Button({ label, x_expand: true, can_focus: true, style: CHIP });
+                btn.connect('clicked', () => this._run([COLDSPOT, name]));
+                stanceBox.add_child(btn);
+                this._stanceItems[name] = btn;
+            }
+            stanceRow.add_child(stanceBox);
+            this.menu.addMenuItem(stanceRow);
         }
-        stanceRow.add_child(stanceBox);
-        this.menu.addMenuItem(stanceRow);
         this._govern = new PopupMenu.PopupMenuItem('', { reactive: false });
         this.menu.addMenuItem(this._govern);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -188,7 +193,10 @@ class ColdspotToggle extends QuickMenuToggle {
         // ledger — today's PERSISTED per-app totals (`coldspot ledger`),
         // distinct from the live talkers above: survives roams/reloads, so an
         // app that finished an hour ago still shows its share of today.
-        const ledger = new PopupMenu.PopupSubMenuMenuItem("Today's ledger (all apps)");
+        // Filtered to exclude whatever's already live in talkers above it —
+        // showing the same app/number twice a few lines apart just to say
+        // "still true" is repetition, not information.
+        const ledger = new PopupMenu.PopupSubMenuMenuItem("Today's ledger (idle apps)");
         this._ledgerItem = ledger;
         this.menu.addMenuItem(ledger);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -447,13 +455,20 @@ class ColdspotToggle extends QuickMenuToggle {
                 new PopupMenu.PopupMenuItem('no history yet', { reactive: false }));
         }
 
-        // ledger — today's persisted per-app totals (`coldspot ledger`)
+        // ledger — today's persisted per-app totals (`coldspot ledger`),
+        // minus whatever's already shown live in talkers just above (same
+        // app, same number, twice — see the note by the submenu's creation).
         this._ledgerItem.menu.removeAll();
-        const led = st.ledger || [];
+        const liveNow = new Set((st.talkers || []).map(t => t.name));
+        const allLed = st.ledger || [];
+        const led = allLed.filter(e => !liveNow.has(e.name));
         if (led.length) {
             for (const e of led.slice(0, 10)) {
                 this._ledgerItem.menu.addMenuItem(dataRow(e.name, updown(e.tx_mb, e.rx_mb)));
             }
+        } else if (allLed.length) {
+            this._ledgerItem.menu.addMenuItem(new PopupMenu.PopupMenuItem(
+                'nothing idle — see top apps above', { reactive: false }));
         } else {
             this._ledgerItem.menu.addMenuItem(
                 new PopupMenu.PopupMenuItem('no ledger data yet', { reactive: false }));

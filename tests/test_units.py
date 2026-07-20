@@ -607,6 +607,38 @@ def test_bond_spec_ok():
     assert d._bond_spec_ok(123, known) is False
 
 
+def test_clean_comm():
+    assert d._clean_comm("Chrome_ChildIOT") == "Chrome ChildIOT"
+    assert d._clean_comm("HTTP Client") == "HTTP Client"  # already clean, no-op
+    assert d._clean_comm("claude") == "claude"
+
+
+def test_migrate_ledger_names():
+    # pre-cleanup key ("Chrome_ChildIOT") and post-cleanup key ("Chrome
+    # ChildIOT") both landed in the same day after a mid-day daemon restart —
+    # migrate must fold them into one row, summing rx/tx, not just rename.
+    ledger = {
+        "2026-07-19": {
+            "Chrome_ChildIOT": [638786746, 7573697],
+            "Chrome ChildIOT": [5420273, 712149],
+            "claude": [100, 200],  # already clean — untouched
+        },
+        "2026-07-18": {
+            "background-exec": [1, 2],  # no underscore-as-separator — untouched
+        },
+    }
+    d.migrate_ledger_names(ledger)
+    today = ledger["2026-07-19"]
+    assert set(today) == {"Chrome ChildIOT", "claude"}
+    assert today["Chrome ChildIOT"] == [638786746 + 5420273, 7573697 + 712149]
+    assert today["claude"] == [100, 200]
+    assert ledger["2026-07-18"] == {"background-exec": [1, 2]}
+    # idempotent — running it again on already-migrated data is a no-op
+    before = json.loads(json.dumps(ledger))
+    d.migrate_ledger_names(ledger)
+    assert ledger == before
+
+
 def test_pid_alive():
     assert d._pid_alive(os.getpid()) is True
     assert d._pid_alive(2**31 - 1) is False   # far above any pid_max -> free

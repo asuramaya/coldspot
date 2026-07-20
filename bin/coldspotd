@@ -1001,6 +1001,29 @@ def set_critical_cgroups():
                        capture_output=True, timeout=3)
 
 
+def _clean_comm(name):
+    """Cosmetic cleanup for a raw /proc comm string: '_' is comm's own
+    16-char-limit word separator (e.g. "Chrome_ChildIOT"), not meaningful
+    punctuation. Idempotent — safe to re-apply to an already-clean name."""
+    return name.replace("_", " ")
+
+
+def migrate_ledger_names(ledger):
+    """Fold pre-cleanup ledger keys into their _clean_comm() form in place.
+    Without this, an app that was mid-accumulation when this cleanup shipped
+    splits into two ledger rows for the same day ("Chrome_ChildIOT" carrying
+    the totals from before a daemon restart, "Chrome ChildIOT" from after) —
+    same app, same number, twice, for no reason a user can see. Idempotent:
+    a ledger with no dirty keys is a no-op every time it runs."""
+    for day in ledger.values():
+        for old in [k for k in day if _clean_comm(k) != k]:
+            new = _clean_comm(old)
+            dst = day.setdefault(new, [0, 0])
+            src = day.pop(old)
+            dst[0] += src[0]
+            dst[1] += src[1]
+
+
 def read_proc_raw():
     """{comm: total_bytes} from the BPF `proc_usage` map, full precision.
     None if the core isn't loaded. The basis for both the talker list and the
@@ -1018,8 +1041,8 @@ def read_proc_raw():
         key, val = r.get("key"), r.get("value")
         if not (isinstance(key, list) and isinstance(val, list) and len(val) >= 16):
             continue
-        comm = bytes(int(b, 16) for b in key).split(b"\x00")[0].decode(
-            "ascii", "replace").replace("_", " ")
+        comm = _clean_comm(bytes(int(b, 16) for b in key).split(b"\x00")[0].decode(
+            "ascii", "replace"))
         rx, tx = _le(val[0:8]), _le(val[8:16])
         if comm and (rx + tx) > 0:
             e = out.setdefault(comm, [0, 0])
@@ -1480,6 +1503,7 @@ def main():
     day = load_json(DAY_DB, {"rx": 0, "tx": 0})
     history = load_json(HISTORY_DB, {})   # per-connection day/month rollups
     ledger = load_json(LEDGER_DB, {})     # per-day per-app bytes (delta-summed)
+    migrate_ledger_names(ledger)          # fold any pre-_clean_comm() keys in
     ts = ts_open(TS_DB)                    # hourly (connection, app) time-series
     ts_migrate_ledger(ts, ledger)         # one-time import of the JSON ledger
     prev_proc = {}                        # last proc_usage snapshot, for deltas
