@@ -54,6 +54,30 @@ function humanBits(bits) {
     return `${b.toFixed(1)} Gbit/s`;
 }
 
+function humanMb(mb) {
+    const m = Number(mb) || 0;
+    return m >= 1000 ? `${(m / 1000).toFixed(2)} GB` : `${m.toFixed(1)} MB`;
+}
+
+const updown = (txMb, rxMb) => `↑${humanMb(txMb)} ↓${humanMb(rxMb)}`;
+
+// name-first, data-flush-right row. A plain interpolated string (the prior
+// shape here) put the variable-width number BEFORE the name, so the name's
+// start position raggedly shifted row to row; expanding the name label
+// instead pins it flush left and pushes data flush right regardless of its
+// width. Shared by the three variable-length lists in this menu: talkers,
+// ledger, history.
+function dataRow(name, dataText, onActivate) {
+    const row = new PopupMenu.PopupBaseMenuItem({ reactive: !!onActivate, can_focus: !!onActivate });
+    row.add_child(new St.Label({ text: name, x_expand: true }));
+    row.add_child(new St.Label({
+        text: dataText,
+        style: `color:${PALETTE.DIM}; font-size:0.9em; padding-left:10px;`,
+    }));
+    if (onActivate) row.connect('activate', onActivate);
+    return row;
+}
+
 // the layer-1/2 axis in the pill: a 4-bar signal glyph by health score
 const SIG_BARS = { good: '▂▄▆█', ok: '▂▄▆_', weak: '▂▄__',
                    bad: '▂___', down: '____', unknown: '____' };
@@ -413,10 +437,10 @@ class ColdspotToggle extends QuickMenuToggle {
             .sort((a, b) => b[1].today_mb - a[1].today_mb);
         if (histEntries.length) {
             for (const [hconn, h] of histEntries.slice(0, 8)) {
-                const met = h.metered ? ' ·metered' : '';
-                this._historyItem.menu.addMenuItem(new PopupMenu.PopupMenuItem(
-                    `${h.today_mb} MB today (↓${h.today_rx_mb}/↑${h.today_tx_mb}) · ` +
-                    `${h.month_mb} MB/mo${met}  —  ${hconn}`, { reactive: false }));
+                const met = h.metered ? ' · metered' : '';
+                const data = `${humanMb(h.today_mb)} today (${updown(h.today_tx_mb, h.today_rx_mb)})` +
+                    ` · ${humanMb(h.month_mb)}/mo${met}`;
+                this._historyItem.menu.addMenuItem(dataRow(hconn, data));
             }
         } else {
             this._historyItem.menu.addMenuItem(
@@ -428,8 +452,7 @@ class ColdspotToggle extends QuickMenuToggle {
         const led = st.ledger || [];
         if (led.length) {
             for (const e of led.slice(0, 10)) {
-                this._ledgerItem.menu.addMenuItem(new PopupMenu.PopupMenuItem(
-                    `↑${e.tx_mb} ↓${e.rx_mb} MB   ${e.name}`, { reactive: false }));
+                this._ledgerItem.menu.addMenuItem(dataRow(e.name, updown(e.tx_mb, e.rx_mb)));
             }
         } else {
             this._ledgerItem.menu.addMenuItem(
@@ -488,11 +511,8 @@ class ColdspotToggle extends QuickMenuToggle {
         const talkers = st.talkers || [];
         if (talkers.length) {
             for (const t of talkers.slice(0, 6)) {
-                const up = Number(t.tx_mb ?? 0).toFixed(1);
-                const dn = Number(t.rx_mb ?? 0).toFixed(1);
-                const it = new PopupMenu.PopupMenuItem(`↑${up} ↓${dn} MB   ${t.name}`);
-                it.connect('activate', () => this._run([COLDSPOT, 'uncap', t.name]));
-                this._talkers.addMenuItem(it);
+                this._talkers.addMenuItem(dataRow(t.name, updown(t.tx_mb, t.rx_mb),
+                    () => this._run([COLDSPOT, 'uncap', t.name])));
             }
         } else {
             this._talkers.addMenuItem(new PopupMenu.PopupMenuItem(

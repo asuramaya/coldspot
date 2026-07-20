@@ -1019,7 +1019,7 @@ def read_proc_raw():
         if not (isinstance(key, list) and isinstance(val, list) and len(val) >= 16):
             continue
         comm = bytes(int(b, 16) for b in key).split(b"\x00")[0].decode(
-            "ascii", "replace")
+            "ascii", "replace").replace("_", " ")
         rx, tx = _le(val[0:8]), _le(val[8:16])
         if comm and (rx + tx) > 0:
             e = out.setdefault(comm, [0, 0])
