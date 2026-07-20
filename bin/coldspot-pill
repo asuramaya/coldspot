@@ -48,7 +48,21 @@ case "${1:-install}" in
     # hot-reload extensions).
     cur="$(gsettings get org.gnome.shell enabled-extensions 2>/dev/null || echo '@as []')"
     if grep -Fq "'$EXT_UUID'" <<<"$cur"; then
-      echo "pill installed and enabled."
+      # Already enabled from a prior install — `enable` above just re-flagged
+      # the instance the shell already has loaded, it did NOT re-import the
+      # extension.js we just overwrote. GNOME 50 added a real live-reload for
+      # this over D-Bus (Extensions.ReloadExtension) — try it, and say
+      # plainly which actually happened rather than assuming success: as of
+      # 50.1 the method is declared but not implemented (UnknownMethod), so
+      # this is a no-op fallback until the shell actually backs it.
+      if gdbus call --session --dest org.gnome.Shell.Extensions \
+          --object-path /org/gnome/Shell/Extensions \
+          --method org.gnome.Shell.Extensions.ReloadExtension "$EXT_UUID" \
+          >/dev/null 2>&1; then
+        echo "pill installed and reloaded live — no logout needed."
+      else
+        echo "pill installed — this shell doesn't support live reload yet; log out/in to pick it up."
+      fi
     else
       if [[ "$cur" == "@as []" || "$cur" == "[]" ]]; then cur="['$EXT_UUID']"
       else cur="${cur%]}, '$EXT_UUID']"; fi
