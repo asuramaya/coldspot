@@ -1,6 +1,12 @@
-# Runtime (v0): python3, nftables, systemd, NetworkManager (nmcli)
+# Runtime (v0): python3, nftables, systemd, NetworkManager (nmcli), openssh-client
 python3
 nftables
+openssh-client  # `ssh-keygen -Y verify`: coldspot-update's release-signature
+                # check against release-signing/allowed_signers, and
+                # install.sh's own bootstrap verify. Absent: verify_and_install()
+                # fails closed (refuses to install, see bin/coldspot-update)
+                # rather than crashing — armed since v0.5.0, so this is load-
+                # bearing, not a nicety.
 # Optional v0 niceties (per-app talkers / live rates if present):
 #   bandwhich  nethogs
 # Build-time, v1 BPF core only:
