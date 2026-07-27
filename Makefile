@@ -1,5 +1,13 @@
 # coldspot — common tasks. Run `make help` for the list.
 EXT := extension/coldspot@asuramaya
+# Exclusions are passed as flags, not via an rc file: shellcheck only grew
+# --rcfile in 0.11.0, and ubuntu-latest's runner has shipped older builds
+# that reject the flag outright. Every exclusion here is a deliberate,
+# harmless pattern the real CI runner flags that this repo's own shellcheck
+# doesn't: SC2015 (`A && B || true` as a best-effort compound, not a real
+# if-then-else — the C branch is always a no-op), SC2119/SC2120
+# (has_signing_key()'s optional arg is genuinely optional, called both ways).
+SHELLCHECK_EXCLUDES = SC2015,SC2119,SC2120
 
 .PHONY: help install pill deploy uninstall check lint bpf smoke attack sync-signers check-sutra clean
 
@@ -46,7 +54,7 @@ uninstall:
 
 lint:
 	-ruff check bin/coldspot bin/coldspotd 2>/dev/null || true
-	shellcheck install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh tools/sync-signers.sh tests/test_signing.sh
+	shellcheck -e $(SHELLCHECK_EXCLUDES) install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh tools/sync-signers.sh tests/test_signing.sh
 
 check: lint check-sutra
 	python3 -m py_compile bin/coldspotd bin/coldspot bin/sutra.py
