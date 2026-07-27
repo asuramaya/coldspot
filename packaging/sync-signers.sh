@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# `make sync-signers` — rebuild release-signing/allowed_signers AND
+# `make sync-signers` — rebuild packaging/release-signing/allowed_signers AND
 # install.sh's embedded RELEASE_ALLOWED_SIGNERS twin from the fleet's
 # canonical pubkeys, per ~/code/REPOS/RELEASE.md's sync-signers doctrine.
 #
@@ -17,10 +17,15 @@
 #
 # SEQUENCING: this populates the anchor. Per RELEASE.md, run it ONLY in the
 # same act as cutting the operator's first signed coldspot release — arming
-# release-signing/allowed_signers any earlier bricks coldspot-update against
-# every existing unsigned release.
+# packaging/release-signing/allowed_signers any earlier bricks coldspot-update
+# against every existing unsigned release.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd)"
+# HERE is this script's OWN directory (packaging/), not the repo root: the
+# tree move made release-signing/ a SIBLING of this script (both now live
+# under packaging/), while install.sh stayed at the repo root, one level up
+# from here. The two targets sit at different depths from the script now, so
+# there's no single "go up N levels" that reaches both.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 PRINCIPAL="coldspot"
 NAMESPACES="coldspot-release,pills-tag"
 
@@ -54,7 +59,7 @@ echo "rebuilt $anchor from ${#pubs[@]} canonical keys ($KEY_HOME)"
 # bash "$(...)" capture, which silently strips its trailing newline.
 # RELEASE_ALLOWED_SIGNERS is single-quoted (install.sh) so this can span
 # multiple lines with no escaping.
-python3 - "$HERE/install.sh" "$anchor" <<'PYEOF'
+python3 - "$HERE/../install.sh" "$anchor" <<'PYEOF'
 import re
 import sys
 

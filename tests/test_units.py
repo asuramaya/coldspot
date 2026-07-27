@@ -11,12 +11,12 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# coldspotd does `import sutra` as a sibling (vendored into bin/, same as a
-# real invocation would see it on sys.path[0]) — SourceFileLoader doesn't add
-# that automatically, so it's added explicitly before exec_module below.
-sys.path.insert(0, os.path.join(HERE, "bin"))
+# coldspotd does `import sutra` as a sibling (vendored into src/bin/, same as
+# a real invocation would see it on sys.path[0]) — SourceFileLoader doesn't
+# add that automatically, so it's added explicitly before exec_module below.
+sys.path.insert(0, os.path.join(HERE, "src", "bin"))
 _loader = importlib.machinery.SourceFileLoader(
-    "coldspotd", os.path.join(HERE, "bin", "coldspotd"))
+    "coldspotd", os.path.join(HERE, "src", "bin", "coldspotd"))
 _spec = importlib.util.spec_from_loader("coldspotd", _loader)
 d = importlib.util.module_from_spec(_spec)
 _loader.exec_module(d)
@@ -83,7 +83,7 @@ def test_le():
 
 # ---- BPF<->daemon map-layout contract --------------------------------------
 # flow_key's byte offsets are hand-counted in TWO places: the C struct in
-# bpf/coldspot.bpf.c and read_flows()'s raw-key slicing in coldspotd. They must
+# src/bpf/coldspot.bpf.c and read_flows()'s raw-key slicing in coldspotd. They must
 # agree or `coldspot flows` silently decodes garbage. These tests parse the C
 # struct and round-trip a synthetic row through the *real* decoder, so drift in
 # either half fails here instead of on the user's machine.
@@ -98,7 +98,7 @@ def _flow_key_layout():
     {field: (offset, size), '__sizeof__': total}. The struct is declared with
     no padding holes (its own comment guarantees it), so sequential packing is
     the on-wire layout bpftool dumps."""
-    src = open(os.path.join(HERE, "bpf", "coldspot.bpf.c")).read()
+    src = open(os.path.join(HERE, "src", "bpf", "coldspot.bpf.c")).read()
     import re
     m = re.search(r"struct flow_key\s*\{(.*?)\}\s*;", src, re.S)
     assert m, "flow_key struct not found in coldspot.bpf.c"
@@ -424,7 +424,7 @@ def test_bpf_clear_map_deletes_each_key():
 def test_cli_parse_rate():
     # load the CLI module to test its pure rate parser (b=bits, B=bytes)
     cli = importlib.machinery.SourceFileLoader(
-        "coldspot_cli", os.path.join(HERE, "bin", "coldspot"))
+        "coldspot_cli", os.path.join(HERE, "src", "bin", "coldspot"))
     spec = importlib.util.spec_from_loader("coldspot_cli", cli)
     cc = importlib.util.module_from_spec(spec)
     cli.exec_module(cc)

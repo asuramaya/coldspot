@@ -1,6 +1,6 @@
 # Release signing
 
-Status: **armed, since v0.5.0.** `release-signing/allowed_signers` (and its
+Status: **armed, since v0.5.0.** `packaging/release-signing/allowed_signers` (and its
 `install.sh`-embedded twin, `RELEASE_ALLOWED_SIGNERS`) carry all 4 canonical
 `ra-master` hardware-key entries. Verification is mandatory and fail-closed for
 every client installed from v0.5.0 onward: `install.sh`'s bootstrap and
@@ -62,12 +62,13 @@ coldspot namespaces="coldspot-release,pills-tag" sk-ssh-ed25519@openssh.com <b64
 make sync-signers
 ```
 
-Rebuilds `release-signing/allowed_signers` **and** `install.sh`'s embedded
-`RELEASE_ALLOWED_SIGNERS` twin from ALL 4 canonical pubkeys in
-`rotten-apple/release-signing/*.pub` (auto-detected as a sibling checkout, or
-set `ROTTEN_APPLE_DIR=/path/to/rotten-apple`). Always a full rebuild, never an
-append — RA's first ceremony left 3 of 4 keys unpinned that way by appending
-one at a time. Refuses to run unless it finds exactly 4 canonical keys.
+Rebuilds `packaging/release-signing/allowed_signers` **and** `install.sh`'s
+embedded `RELEASE_ALLOWED_SIGNERS` twin from ALL 4 canonical pubkeys in
+`~/.ssh/asuramaya-master/*.pub` (operator ruling 13ee52ce; set
+`KEY_HOME=/path/to/asuramaya-master` to override). Always a full rebuild,
+never an append — RA's first ceremony left 3 of 4 keys unpinned that way by
+appending one at a time. Refuses to run unless it finds exactly 4 canonical
+keys.
 
 **Sequencing rule (do not skip):** `make sync-signers` populates the anchor.
 Run it ONLY in the same act as cutting the maintainer's first signed release —
@@ -92,16 +93,16 @@ gh release upload vX.Y.Z coldspot.tar.gz.sha256.sig
 ## Verification (client side — already built)
 
 ```sh
-ssh-keygen -Y verify -f release-signing/allowed_signers \
+ssh-keygen -Y verify -f packaging/release-signing/allowed_signers \
   -I coldspot -n coldspot-release \
   -s coldspot.tar.gz.sha256.sig < coldspot.tar.gz.sha256
 ```
 
 Exit 0 = valid signature from the pinned principal, over exactly those
-checksum bytes. Anything else is a hard failure. Both `bin/coldspot-update`
+checksum bytes. Anything else is a hard failure. Both `src/bin/coldspot-update`
 and `install.sh`'s bootstrap:
 
-1. Check whether `release-signing/allowed_signers` (or, for install.sh, the
+1. Check whether `packaging/release-signing/allowed_signers` (or, for install.sh, the
    embedded `RELEASE_ALLOWED_SIGNERS`) has any real key line — blank/absent
    means no key has been provisioned yet; each path follows its own policy
    above.

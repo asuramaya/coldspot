@@ -8,29 +8,25 @@ BPF maps, or nftables.
 ## Repo map
 
 ```
-bin/          coldspot (CLI), coldspotd (daemon), coldspot-stance, coldspot-bpf (BPF loader),
-              coldspot-update, coldspot-pill (per-account installer), vendored sutra*.py
-bpf/          coldspot.bpf.c, coldspot_helpers.h, vmlinux.h (generated, not committed logic)
-config/       coldspot.conf defaults
-systemd/      coldspotd.service, coldspot-update.timer/.service
-extension/    the GNOME Shell pill (coldspot@asuramaya)
-tools/        deploy.sh, sync-signers.sh
-release-signing/  allowed_signers (the SSH-signature trust anchor)
-packaging/    VERSION (the one version constant)
-tests/        smoke.sh, attack_socket.py, test_units.py, test_signing.sh
-docs/         this file, USAGE.md, RELEASING.md, RELEASE-SIGNING.md
+src/bin/          coldspot (CLI), coldspotd (daemon), coldspot-stance, coldspot-bpf (BPF loader),
+                   coldspot-update, coldspot-pill (per-account installer), vendored sutra*.py
+src/bpf/          coldspot.bpf.c, coldspot_helpers.h, vmlinux.h (generated, not committed logic)
+src/data/config/  coldspot.conf defaults
+src/data/systemd/system/  coldspotd.service, coldspot-update.timer/.service
+src/data/man/     coldspot.1, coldspotd.8
+src/extension/    the GNOME Shell pill (coldspot@asuramaya)
+packaging/        deploy.sh, sync-signers.sh, packages.txt, VERSION (the one version constant)
+packaging/release-signing/  allowed_signers (the SSH-signature trust anchor)
+tests/            smoke.sh, attack_socket.py, test_units.py, test_signing.sh
+docs/             this file, USAGE.md, RELEASING.md, RELEASE-SIGNING.md, CHANGELOG.md
 ```
-
-This mirrors the family's `src/`/`packaging/` split conceptually (bin+bpf+config+systemd+
-extension are the runtime, tools+release-signing are packaging-adjacent), without yet having
-made the rest of the move. See **Standard exemptions** below.
 
 ## Meter: measuring and attributing
 
 `coldspotd` (root) is the only privileged actor on the machine. It attributes bytes one of two
 ways:
 
-- **v1, the eBPF core** (`bpf/coldspot.bpf.c`): a `cgroup/skb` program that accounts per-app
+- **v1, the eBPF core** (`src/bpf/coldspot.bpf.c`): a `cgroup/skb` program that accounts per-app
   and per-destination bytes and enforces the stance verdict in the *same* kernel pass. This is
   the preferred source when it's loaded; see **The BPF core** below.
 - **v0, the fallback**: `/proc/net/dev` plus systemd IP accounting, used when the core isn't
@@ -162,7 +158,7 @@ integration, not the primitives.
   neither one grows logic that belongs in `coldspotd`.
 * Names that come off the network or a raw `/proc` read (SSIDs, `comm` strings) are untrusted
   and reach displays/logs as sanitized text only.
-* `bin/sutra.py` is vendored byte-identical from the `sutra` repo, and `make check-sutra`
+* `src/bin/sutra.py` is vendored byte-identical from the `sutra` repo, and `make check-sutra`
   proves it: integrity is a hard failure, freshness is three-way (match, lag-warns, or
   drift-fails against canonical history). `coldspotd` uses it directly: `ControlServer` is the
   control socket, `write_status()` is every atomic state write.
@@ -175,7 +171,7 @@ choice.
 
 | Item | Why |
 |---|---|
-| daemon runs fully as root, not capability-dropped | the v1 BPF core and its loader need `CAP_BPF`/`CAP_NET_ADMIN`, and coldspot hasn't yet split a capability-scoped worker off the daemon. Tracked as future work, not a rejected idea; see the commented `AmbientCapabilities` line in `systemd/system/coldspotd.service` |
-| `bin/sutra_update.py` and `bin/sutra_xen.py` are vendored but unused | `coldspot-update` is still a hand-rolled bash script with its own SSH-signature verification, not yet a thin wrapper over `sutra_update.main()`. That's a real behavior-changing rewrite of the signature-verification path, deliberately sequenced on its own rather than riding this pass. `sutra_xen.py` has no coldspot integration point yet |
+| daemon runs fully as root, not capability-dropped | the v1 BPF core and its loader need `CAP_BPF`/`CAP_NET_ADMIN`, and coldspot hasn't yet split a capability-scoped worker off the daemon. Tracked as future work, not a rejected idea; see the commented `AmbientCapabilities` line in `src/data/systemd/system/coldspotd.service` |
+| `src/bin/sutra_update.py` and `src/bin/sutra_xen.py` are vendored but unused | `coldspot-update` is still a hand-rolled bash script with its own SSH-signature verification, not yet a thin wrapper over `sutra_update.main()`. That's a real behavior-changing rewrite of the signature-verification path, deliberately sequenced on its own rather than riding this pass. `sutra_xen.py` has no coldspot integration point yet |
 | `extension.js` keeps local `PALETTE`/`CHIP`/`CHIP_ON`/`dataRow` instead of importing `pill.js` | both now exist side by side after the latest sutra re-vendor; collapsing the duplicate is a safe, separately-tracked cleanup (the vendored `dataRow` is coldspot's own row layout, promoted into the family commons) |
 | no `.deb` yet | owed under a standing ruling, sized as its own milestone; a new artifact type needs its own verification and shouldn't ride a doc/CI/tree pass |

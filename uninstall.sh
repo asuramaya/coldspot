@@ -48,6 +48,7 @@ for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspo
 done
 rm -f "$BINDIR/sutra.py"   # vendored sibling import, installed alongside coldspotd/coldspot
 rm -f "$UNITDIR/coldspotd.service" "$UNITDIR/coldspot-update.service" "$UNITDIR/coldspot-update.timer"
+rm -f "$PREFIX/share/man/man1/coldspot.1" "$PREFIX/share/man/man8/coldspotd.8"
 rm -f /etc/sudoers.d/coldspot
 rm -rf "$SHAREDIR"
 systemctl daemon-reload

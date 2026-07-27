@@ -1,5 +1,5 @@
 __pycache__/
 *.pyc
-bpf/vmlinux.h
-bpf/*.o
+src/bpf/vmlinux.h
+src/bpf/*.o
 dist/

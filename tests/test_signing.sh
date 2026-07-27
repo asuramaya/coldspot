@@ -22,18 +22,18 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # in .github/workflows/signing-sync.yml; this can't confirm the keys are the
 # operator's actual canonical set (CI can't reach ~/.ssh/asuramaya-master),
 # only that the anchor's shape is sane either way.
-anchor_content="$(cat "$HERE/release-signing/allowed_signers" 2>/dev/null || true)"
+anchor_content="$(cat "$HERE/packaging/release-signing/allowed_signers" 2>/dev/null || true)"
 if [[ -n "${anchor_content//[[:space:]]/}" ]]; then
-  anchor_lines="$(grep -c . "$HERE/release-signing/allowed_signers")"
+  anchor_lines="$(grep -c . "$HERE/packaging/release-signing/allowed_signers")"
   [[ "$anchor_lines" -eq 4 ]] \
-    || fail "release-signing/allowed_signers is armed but has ${anchor_lines} lines, expected exactly 4"
+    || fail "packaging/release-signing/allowed_signers is armed but has ${anchor_lines} lines, expected exactly 4"
   echo "shipped allowed_signers is armed with 4 keys OK"
 else
   echo "shipped allowed_signers is the empty placeholder OK"
 fi
 
 # --- load coldspot-update's functions without running an update -------------
-COLDSPOT_UPDATE_SOURCED=1 source "$HERE/bin/coldspot-update"
+COLDSPOT_UPDATE_SOURCED=1 source "$HERE/src/bin/coldspot-update"
 
 td="$(mktemp -d)"
 trap 'rm -rf "$td"' EXIT

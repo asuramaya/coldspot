@@ -35,11 +35,11 @@ verb reference.
 
 | | |
 |---|---|
-| Use it | [docs/USAGE.md](docs/USAGE.md) |
+| Use it | [docs/USAGE.md](docs/USAGE.md), or `man coldspot` / `man coldspotd` |
 | Change it | [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) |
 | Understand how it's built | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Cut a release | [docs/RELEASING.md](docs/RELEASING.md) |
-| See what changed | [CHANGELOG.md](CHANGELOG.md) |
+| See what changed | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
 | Report a vulnerability | [.github/SECURITY.md](.github/SECURITY.md) |
 
 ## Install

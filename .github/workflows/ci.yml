@@ -17,10 +17,10 @@ jobs:
       - name: One version constant (REPO-STANDARD.md)
         run: |
           if grep -rn 'VERSION[[:space:]]*=[[:space:]]*['"'"'"][0-9]' \
-              bin/coldspot bin/coldspotd bin/coldspot-stance bin/coldspot-bpf \
-              bin/coldspot-update bin/coldspot-pill install.sh uninstall.sh \
-              tools/deploy.sh tools/sync-signers.sh \
-              extension/coldspot@asuramaya/extension.js 2>/dev/null; then
+              src/bin/coldspot src/bin/coldspotd src/bin/coldspot-stance src/bin/coldspot-bpf \
+              src/bin/coldspot-update src/bin/coldspot-pill install.sh uninstall.sh \
+              packaging/deploy.sh packaging/sync-signers.sh \
+              src/extension/coldspot@asuramaya/extension.js 2>/dev/null; then
             echo "::error::a literal version string exists outside packaging/VERSION"
             exit 1
           fi
@@ -30,19 +30,22 @@ jobs:
         # 0.11.0, and ubuntu-latest has shipped older builds that reject it
         # outright. Exclusions match the Makefile's SHELLCHECK_EXCLUDES;
         # rationale is there since ci.yml can't share a Make variable.
-        run: shellcheck -e SC2015,SC2119,SC2120 install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh tools/sync-signers.sh tests/test_signing.sh
+        run: shellcheck -e SC2015,SC2119,SC2120 install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-update src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh tests/test_signing.sh
 
       - name: Python (syntax)
-        run: python3 -m py_compile bin/coldspotd bin/coldspot bin/sutra.py
+        run: python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/bin/sutra.py
 
       - name: Sutra vendor drift guard
         run: make check-sutra
 
       - name: GNOME extension (syntax)
-        run: node --check "extension/coldspot@asuramaya/extension.js"
+        run: node --check "src/extension/coldspot@asuramaya/extension.js"
 
       - name: GNOME extension metadata (valid JSON)
-        run: python3 -c "import json; json.load(open('extension/coldspot@asuramaya/metadata.json'))"
+        run: python3 -c "import json; json.load(open('src/extension/coldspot@asuramaya/metadata.json'))"
+
+      - name: man page (syntax)
+        run: groff -man -Tutf8 -ww src/data/man/man1/coldspot.1 src/data/man/man8/coldspotd.8 > /dev/null
 
       - name: Unit + contract tests
         run: python3 tests/test_units.py
@@ -55,3 +58,6 @@ jobs:
 
       - name: Control socket fuzz (adversarial, no root)
         run: python3 tests/attack_socket.py
+
+      - name: Repo structure gate (REPO-STANDARD.md)
+        run: make check-repo

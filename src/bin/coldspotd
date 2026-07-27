@@ -7,7 +7,7 @@ v0 sources, in order of fidelity (each degrades to the next):
   1. systemd per-unit IP accounting  -> per-app rx/tx        (needs IPAccounting)
   2. /proc/net/dev on the metered iface -> interface total   (always works)
 
-The control socket flips stance / budget; the BPF core (bpf/coldspot.bpf.c)
+The control socket flips stance / budget; the BPF core (src/bpf/coldspot.bpf.c)
 replaces source #1 at v1 with fused metering + siege verdict. Userspace seam
 (the status.json the CLI and panel read) does not change when that lands.
 """

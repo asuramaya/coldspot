@@ -33,7 +33,7 @@ jobs:
 
       # No signing step here, deliberately: coldspot-update trusts an SSH
       # signature (ssh-keygen -Y verify) against a key pinned INSIDE the
-      # client (release-signing/allowed_signers, docs/RELEASE-SIGNING.md),
+      # client (packaging/release-signing/allowed_signers, docs/RELEASE-SIGNING.md),
       # precisely so that this CI (or the GitHub account behind it) is not the
       # trust root. A secret/hardware key living in Actions secrets would let
       # anyone who compromises the account or the workflow sign whatever they
@@ -59,9 +59,9 @@ jobs:
             ver="${GITHUB_REF_NAME#v}"
             awk -v v="${ver}" 'BEGIN{f=0}
               /^## / { if (f) exit; if (index($0, v)) { f=1; print; next } }
-              f { print }' CHANGELOG.md > RELEASE_NOTES.md
+              f { print }' docs/CHANGELOG.md > RELEASE_NOTES.md
             if [ ! -s RELEASE_NOTES.md ]; then
-              echo "::error::no CHANGELOG.md section for ${ver}; add one before tagging"
+              echo "::error::no docs/CHANGELOG.md section for ${ver}; add one before tagging"
               exit 1
             fi
             gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \

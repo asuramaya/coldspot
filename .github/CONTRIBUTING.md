@@ -40,11 +40,11 @@ socket) and a real daemon behind it, and the fuzzer exists specifically to keep 
 honest.
 
 If `check-sutra` reports lag, the shared `sutra` repo has moved ahead. Re-vendor rather than
-editing `bin/sutra.py` in place. It's vendored byte-identical on purpose, and hand edits are
+editing `src/bin/sutra.py` in place. It's vendored byte-identical on purpose, and hand edits are
 exactly what the integrity check exists to catch:
 
 ```bash
-bash ~/code/REPOS/sutra/vendor.sh bin extension/coldspot@asuramaya
+bash ~/code/REPOS/sutra/vendor.sh src/bin src/extension/coldspot@asuramaya
 ```
 
 `make smoke` and `make attack` never touch a real network interface or your real installation.

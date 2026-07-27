@@ -1,0 +1,79 @@
+.TH COLDSPOTD 8 "2026-07-27" "coldspot 0.5.0" "coldspot manual"
+.SH NAME
+coldspotd \- the coldspot metered-link daemon
+.SH SYNOPSIS
+.B coldspotd
+.SH DESCRIPTION
+.B coldspotd
+is the only privileged actor in coldspot: it measures and attributes
+traffic, and enforces whichever stance is active. Nothing above the
+control socket, not the CLI and not the GNOME pill, ever needs root.
+.PP
+Attribution comes from one of two sources. The v1 eBPF core (a single
+.I cgroup/skb
+program, see
+.BR coldspot-bpf (8))
+meters per-app and per-destination bytes and enforces the stance verdict
+in the same kernel pass; it is the preferred source when loaded. The v0
+fallback reads systemd per-unit IP accounting, degrading further to
+.I /proc/net/dev
+totals when accounting isn't enabled. Either way the daemon publishes one
+seam,
+.IR status.json ,
+that every consumer reads.
+.SH STANCES
+.TP
+.B open
+Normal; relies only on the NetworkManager metered flag.
+.TP
+.B lean
+Pauses known hogs (updates, snap, tailscale), keeps browsing.
+.TP
+.B cold
+The metered default, entered automatically. Caps total egress to a
+smooth pipe (CAKE) and gives warmed tasks plus DNS priority within it.
+Critical connectivity is never throttled.
+.TP
+.B siege
+nftables default-drop plus a cgroup allowlist; only the warmed subtree
+survives.
+.SH THE CONTROL SOCKET
+The socket is
+.IR root:coldspot ", mode " 0660 .
+Only root or a member of the
+.B coldspot
+group can connect, and every accepted connection is re-checked via
+.B SO_PEERCRED
+against the same rule, default-deny for anything it can't positively
+verify. State files
+.RI ( status.json ,
+the ledger, the time-series database) are written
+.IR root:coldspot ", mode " 0640 ,
+group-readable and never world-readable.
+.SH CONFIGURATION
+Default path
+.IR /etc/coldspot.conf .
+Config is the seed, never the master: values are re-validated on load, and
+a malformed or hostile config can't leave the daemon in an unsafe state.
+Auto-update
+.RI ( "auto_update = on" )
+is off by default; it's a root process running unattended.
+.SH FILES
+.I /etc/coldspot.conf
+.RS
+Daemon configuration.
+.RE
+.I /run/coldspot/status.json
+.RS
+Live state: stance, budget, talkers, links, history, ledger, advice.
+.RE
+.I /var/lib/coldspot/
+.RS
+Persistent ledger and time-series usage history.
+.RE
+.I /sys/fs/bpf/coldspot/
+.RS
+Pinned eBPF programs and maps, when the v1 core is loaded.
+.RE
+.SH SEE ALSO
+.BR coldspot (1)

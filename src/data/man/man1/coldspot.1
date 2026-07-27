@@ -1,0 +1,105 @@
+.TH COLDSPOT 1 "2026-07-27" "coldspot 0.5.0" "coldspot manual"
+.SH NAME
+coldspot \- verb CLI for the coldspot metered-link daemon
+.SH SYNOPSIS
+.B coldspot
+.RI [ verb ]
+.RI [ args ...]
+.SH DESCRIPTION
+.B coldspot
+talks to
+.BR coldspotd (8)
+over its control socket and prints the answer. It never uses
+.BR sudo :
+every privileged action happens inside the daemon, gated by membership in
+the
+.B coldspot
+system group.
+.SH EVERYDAY VERBS
+.TP
+.B status
+MB used, budget, stance, top talkers.
+.TP
+.BI budget " MB"
+Cap this session's data use; the pill heats up as you near it.
+.TP
+.B siege
+Only the active task talks on the wire; everything else is dropped.
+.TP
+.B run \-\- " cmd " ...
+Launch a job as the active task, warmed into the priority lane.
+.TP
+.BI limit " rate"
+Hard system-wide egress cap, e.g.
+.IR 1mbps .
+.TP
+.BI uncap " app"
+Warm a task: full speed even while everything else is cold.
+.TP
+.B open
+Panic release: lift all throttling and siege.
+.TP
+.BI stance " open|lean|cold|siege"
+Set the stance directly.
+.SH LINK HEALTH
+.TP
+.B link
+Per-interface board: signal, band/channel, PHY rate, loss, power-save,
+health score.
+.TP
+.BI aim " [iface]"
+Live signal meter for positioning an antenna.
+.TP
+.B stabilize " " auto
+Shape a weak or lossy link so it stops collapsing under load.
+.TP
+.B steer " " auto
+Make the healthiest radio primary.
+.TP
+.B bond
+Aggregate independent uplinks into one pipe (ECMP), health-gated.
+.SH NETWORK MEMORY
+.TP
+.B policy
+List the remembered policy for every known network.
+.TP
+.B here " " <stance>
+Set the policy for the network you're on right now.
+.TP
+.BI remember " ssid stance"
+Set the policy for a named network.
+.TP
+.BI forget " ssid"
+Drop a network's remembered policy; it re-seeds next time you're on it.
+.SH ANALYSIS
+.TP
+.B top
+Live per-app upload/download view.
+.TP
+.B history
+Per-connection usage, today and this month.
+.TP
+.BI report " [today|week|month]"
+Breakdown by connection and app.
+.TP
+.B ledger
+What ate today's data; persists across BPF core reloads.
+.TP
+.B advise
+Proactive nudges about apps behaving badly.
+.SH UPDATING
+.TP
+.B update " [\-\-check]"
+Pull a newer release now. Signature-verified; see
+.BR coldspot-update (8).
+.SH FILES
+.I /etc/coldspot.conf
+.RS
+Daemon configuration.
+.RE
+.I /run/coldspot/status.json
+.RS
+The seam the CLI and the GNOME pill both read.
+.RE
+.SH SEE ALSO
+.BR coldspotd (8)

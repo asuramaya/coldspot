@@ -43,24 +43,24 @@ core_loaded=0; [[ -e "$PIN/usage" ]] && core_loaded=1
 #    programs in the object never get attached.
 echo "== bins -> $BINDIR =="
 for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
-  install -m 0755 -o root -g root "$SRC/bin/$b" "$BINDIR/$b"
+  install -m 0755 -o root -g root "$SRC/src/bin/$b" "$BINDIR/$b"
 done
 # coldspotd/coldspot both `import sutra` as a sibling — see install.sh's note.
-install -m 0644 -o root -g root "$SRC/bin/sutra.py" "$BINDIR/sutra.py"
+install -m 0644 -o root -g root "$SRC/src/bin/sutra.py" "$BINDIR/sutra.py"
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
 
 # GNOME pill source, staged the same way as bpf sources below — never installed
 # into an account from here; run `coldspot-pill install` (as yourself) for that.
-install -Dm644 "$SRC/extension/coldspot@asuramaya/metadata.json" \
+install -Dm644 "$SRC/src/extension/coldspot@asuramaya/metadata.json" \
   "$SHAREDIR/extension/coldspot@asuramaya/metadata.json"
-install -Dm644 "$SRC/extension/coldspot@asuramaya/extension.js" \
+install -Dm644 "$SRC/src/extension/coldspot@asuramaya/extension.js" \
   "$SHAREDIR/extension/coldspot@asuramaya/extension.js"
 
 # 3. BPF sources + rebuild the object into the installed share (local BTF only).
 echo "== bpf core -> $SHAREDIR/bpf =="
-install -Dm644 "$SRC/bpf/coldspot.bpf.c"     "$SHAREDIR/bpf/coldspot.bpf.c"
-install -Dm644 "$SRC/bpf/coldspot_helpers.h" "$SHAREDIR/bpf/coldspot_helpers.h"
+install -Dm644 "$SRC/src/bpf/coldspot.bpf.c"     "$SHAREDIR/bpf/coldspot.bpf.c"
+install -Dm644 "$SRC/src/bpf/coldspot_helpers.h" "$SHAREDIR/bpf/coldspot_helpers.h"
 if command -v clang >/dev/null && command -v bpftool >/dev/null; then
   env COLDSPOT_BPF_DIR="$SHAREDIR/bpf" "$BINDIR/coldspot-bpf" build
 else

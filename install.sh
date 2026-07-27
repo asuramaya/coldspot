@@ -25,12 +25,13 @@ SIGN_NAMESPACE="coldspot-release"
 
 # Trust anchor for the curl-pipe-bash bootstrap below, EMBEDDED directly:
 # `curl .../install.sh | sudo bash` fetches this ONE file over the network, so
-# at that point there is no sibling release-signing/allowed_signers to read —
-# unlike coldspot-update (an installed, persistent script), which reads that
-# file straight off disk. Ships empty until a key is provisioned; kept in sync
-# with release-signing/allowed_signers by `make sync-signers`
-# (tools/sync-signers.sh) — never hand-edit this. Single-quoted deliberately:
-# the value can span multiple lines (one per pinned key) and must never be
+# at that point there is no sibling packaging/release-signing/allowed_signers
+# to read — unlike coldspot-update (an installed, persistent script), which
+# reads that file straight off disk. Ships empty until a key is provisioned;
+# kept in sync with packaging/release-signing/allowed_signers by
+# `make sync-signers` (packaging/sync-signers.sh) — never hand-edit this.
+# Single-quoted deliberately: the value can span multiple lines (one per
+# pinned key) and must never be
 # shell-interpolated. While empty, the bootstrap below degrades to sha256-only
 # with a printed warning rather than refusing to install outright — this is a
 # one-time, human-typed `sudo` action, not the unattended daily updater
@@ -134,7 +135,7 @@ EOF
   bash "$inner" "$@"; exit $?
 }
 
-[[ -f "$SRC/bin/coldspotd" ]] || bootstrap_from_release "$@"
+[[ -f "$SRC/src/bin/coldspotd" ]] || bootstrap_from_release "$@"
 
 # We already know we're root (checked at the top, before any of the above ran).
 # The ONLY thing that still needs to know about a human account is the group
@@ -150,20 +151,20 @@ echo "== coldspot ${VERSION} installer =="
 # 1. binaries + version marker
 echo "-- binaries -> $BINDIR"
 for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
-  install -m 0755 -o root -g root "$SRC/bin/$b" "$BINDIR/$b"
+  install -m 0755 -o root -g root "$SRC/src/bin/$b" "$BINDIR/$b"
 done
 # coldspotd/coldspot both `import sutra` as a sibling — vendored, never hand-
-# edited (bin/sutra.version is the drift anchor, see `make check-sutra`).
+# edited (src/bin/sutra.version is the drift anchor, see `make check-sutra`).
 # Python puts an invoked script's own dir on sys.path[0], so it has to live
 # right next to them in $BINDIR, not under $SHAREDIR.
-install -m 0644 -o root -g root "$SRC/bin/sutra.py" "$BINDIR/sutra.py"
+install -m 0644 -o root -g root "$SRC/src/bin/sutra.py" "$BINDIR/sutra.py"
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
 
 # 2. bpf core sources + build (clang + local BTF, no network)
 echo "-- bpf core sources -> $SHAREDIR/bpf"
-install -Dm644 "$SRC/bpf/coldspot.bpf.c"     "$SHAREDIR/bpf/coldspot.bpf.c"
-install -Dm644 "$SRC/bpf/coldspot_helpers.h" "$SHAREDIR/bpf/coldspot_helpers.h"
+install -Dm644 "$SRC/src/bpf/coldspot.bpf.c"     "$SHAREDIR/bpf/coldspot.bpf.c"
+install -Dm644 "$SRC/src/bpf/coldspot_helpers.h" "$SHAREDIR/bpf/coldspot_helpers.h"
 if command -v clang >/dev/null && command -v bpftool >/dev/null; then
   echo "-- building bpf core from local kernel BTF"
   env COLDSPOT_BPF_DIR="$SHAREDIR/bpf" "$BINDIR/coldspot-bpf" build \
@@ -173,7 +174,11 @@ else
 fi
 
 # 3. default config (kept across reinstalls)
-[[ -f /etc/coldspot.conf ]] || install -Dm644 "$SRC/config/coldspot.conf.example" /etc/coldspot.conf
+[[ -f /etc/coldspot.conf ]] || install -Dm644 "$SRC/src/data/config/coldspot.conf.example" /etc/coldspot.conf
+
+# man pages
+install -Dm644 "$SRC/src/data/man/man1/coldspot.1"  "$PREFIX/share/man/man1/coldspot.1"
+install -Dm644 "$SRC/src/data/man/man8/coldspotd.8" "$PREFIX/share/man/man8/coldspotd.8"
 
 # 4. privilege model: no sudo. The CLI talks to coldspotd over its control
 # socket, and access is gated by membership in the `coldspot` system group (the
@@ -195,9 +200,9 @@ fi
 
 # 5. systemd: meter daemon (+ updater units, installed but NOT enabled)
 echo "-- systemd units + enabling"
-install -m 0644 "$SRC/systemd/system/coldspotd.service"       "$UNITDIR/coldspotd.service"
-install -m 0644 "$SRC/systemd/system/coldspot-update.service" "$UNITDIR/coldspot-update.service"
-install -m 0644 "$SRC/systemd/system/coldspot-update.timer"   "$UNITDIR/coldspot-update.timer"
+install -m 0644 "$SRC/src/data/systemd/system/coldspotd.service"       "$UNITDIR/coldspotd.service"
+install -m 0644 "$SRC/src/data/systemd/system/coldspot-update.service" "$UNITDIR/coldspot-update.service"
+install -m 0644 "$SRC/src/data/systemd/system/coldspot-update.timer"   "$UNITDIR/coldspot-update.timer"
 systemctl daemon-reload
 systemctl enable coldspotd.service
 # `enable --now` on an ALREADY-active unit is a no-op start — it would leave the
@@ -219,8 +224,8 @@ fi
 # it isn't done here; each account runs `coldspot-pill install` for itself
 # (works for every user on a shared box, not just whoever ran this installer).
 echo "-- GNOME pill source -> $SHAREDIR/extension/$EXT_UUID"
-install -Dm644 "$SRC/extension/$EXT_UUID/metadata.json" "$SHAREDIR/extension/$EXT_UUID/metadata.json"
-install -Dm644 "$SRC/extension/$EXT_UUID/extension.js"  "$SHAREDIR/extension/$EXT_UUID/extension.js"
+install -Dm644 "$SRC/src/extension/$EXT_UUID/metadata.json" "$SHAREDIR/extension/$EXT_UUID/metadata.json"
+install -Dm644 "$SRC/src/extension/$EXT_UUID/extension.js"  "$SHAREDIR/extension/$EXT_UUID/extension.js"
 
 # 7. verify perms
 echo "-- verifying"

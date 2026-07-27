@@ -4,7 +4,7 @@
 """Adversarial control-socket harness for coldspotd.
 
 Boots its OWN sandboxed daemon the exact way tests/smoke.sh does — a copy of
-bin/coldspotd with /run/coldspot and /var/lib/coldspot sed-rewritten into a
+src/bin/coldspotd with /run/coldspot and /var/lib/coldspot sed-rewritten into a
 throwaway tempdir, run as the current unprivileged user with COLDSPOT_IFACE=lo.
 Nothing here touches the live /run/coldspot, systemd, or root: the daemon runs
 as you, so it skips the SO_PEERCRED gate (see _coldspot_authz's
@@ -52,7 +52,7 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SAMPLE = 2.0            # coldspotd's publish cadence (bin/coldspotd: SAMPLE)
+SAMPLE = 2.0            # coldspotd's publish cadence (src/bin/coldspotd: SAMPLE)
 PUBLISH_WAIT = SAMPLE * 1.6   # long enough for one fresh status.json write
 
 # status.json keys + types smoke.sh treats as the seam invariant.
@@ -77,12 +77,12 @@ def weak(msg):
 
 # --------------------------------------------------------------- sandbox boot
 run_dir = tempfile.mkdtemp(prefix="coldspot-attack-")
-_src = open(os.path.join(HERE, "bin", "coldspotd")).read()
+_src = open(os.path.join(HERE, "src", "bin", "coldspotd")).read()
 _src = _src.replace("/run/coldspot", run_dir).replace("/var/lib/coldspot", run_dir)
 _daemon = os.path.join(run_dir, "coldspotd")
 with open(_daemon, "w") as f:
     f.write(_src)
-shutil.copy(os.path.join(HERE, "bin", "sutra.py"), os.path.join(run_dir, "sutra.py"))
+shutil.copy(os.path.join(HERE, "src", "bin", "sutra.py"), os.path.join(run_dir, "sutra.py"))
 
 SOCK = os.path.join(run_dir, "control.sock")
 STATUS = os.path.join(run_dir, "status.json")
