@@ -1,136 +1,63 @@
 # coldspot
 
+[![release](https://img.shields.io/github/v/release/asuramaya/coldspot?sort=semver)](https://github.com/asuramaya/coldspot/releases/latest)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 Keep a hotspot cold. A metered link is **cold by default**: coldspot caps total
 speed to a smooth pipe, gives the task you care about priority *within* it, and
-attributes every byte to the app that spent it — so one bad pull, heavy page, or
+attributes every byte to the app that spent it, so one bad pull, heavy page, or
 runaway agent swarm can't blow your data budget. It's protection against your own
 sloppy usage, applied automatically the moment you're on a metered network.
 
 It's the network sibling of [phanspeed](https://github.com/asuramaya/phanspeed):
 a daemon that owns the truth, a verb CLI over it, and a GNOME pill on top. Where
 phanspeed dials watts and EPP, coldspot governs **bandwidth**, a **data budget**,
-and a **stance** — and tells you, in depth, where the data went.
-
-```
-coldspot status            # MB used, budget, stance, top talkers
-coldspot budget 500        # cap this session at 500 MB; the pill heats up as you near it
-coldspot siege             # only the active task talks; everything else is dropped
-coldspot run -- rsync ...  # launch a job as *the* active task
-coldspot limit 1mbps       # hard system-wide egress cap; spend the trickle wisely
-coldspot uncap firefox     # warm a task: full speed even while everything's cold
-coldspot open              # panic release — lift all throttling/siege
-coldspot link              # per-interface link health: signal, rate, channel, loss
-coldspot aim wlan0         # live signal meter for positioning an antenna
-coldspot stabilize auto    # smooth a weak/lossy link (ack-filter + download AQM)
-coldspot here stabilize    # remember: on THIS network, stabilize (persists)
-coldspot steer auto        # make the healthiest radio primary (automatic by default)
-coldspot bond              # aggregate independent uplinks into one pipe (ECMP)
-coldspot policy            # what coldspot does on each of your networks
-coldspot top               # live per-app ↑/↓ view (what's burning data right now)
-coldspot history           # per-connection usage: Brick vs home, today + this month
-coldspot report month      # deep breakdown by connection + app (today|week|month)
-coldspot ledger            # what ate today's data (persists across core reloads)
-coldspot advise            # proactive nudges, e.g. "transmission is seeding to 37 peers"
-coldspot stance open       # back to normal
-```
+and a **stance**, and tells you, in depth, where the data went.
 
 ## Stances
+
 | stance | what it does |
 |--------|--------------|
 | `open`  | normal; relies only on the NetworkManager metered flag |
 | `lean`  | pause the known hogs (updates, snap, tailscale), keep browsing |
-| `cold`  | **the metered default (auto).** Caps total egress to a smooth pipe (CAKE) and gives warmed tasks + DNS priority *within* it — so the app you care about stays responsive while a runaway pull/website/swarm gets only the leftover, and **nothing can exceed the cap**. The cap protects the budget; priority protects your task. Critical connectivity (NetworkManager/DNS/DHCP/NTP/updates) is never throttled. |
-| `siege` | nftables default-drop + cgroup allowlist — only `coldspot.slice` survives |
+| `cold`  | **the metered default (auto).** Caps total egress to a smooth pipe (CAKE) and gives warmed tasks + DNS priority *within* it, so the app you care about stays responsive while a runaway pull/website/swarm gets only the leftover, and **nothing can exceed the cap**. Critical connectivity is never throttled. |
+| `siege` | nftables default-drop + cgroup allowlist; only `coldspot.slice` survives |
 
 On a metered link coldspot enters `cold` automatically. Warm the task you're
-protecting — `coldspot uncap claude` / `coldspot run -- <cmd>` — and it rides the
-priority lane; `coldspot open` lifts everything.
+protecting (`coldspot uncap claude` / `coldspot run -- <cmd>`) and it rides the
+priority lane; `coldspot open` lifts everything. coldspot also senses layer-1/2
+link quality (signal, PHY rate, fades) as a second, independent axis, and keeps
+its own per-network policy memory keyed by SSID rather than just reacting to
+NetworkManager's metered flag. See [docs/USAGE.md](docs/USAGE.md) for the full
+verb reference.
 
-## Link health — the second axis
-A link betrays you two ways: it can be **scarce** (metered, capped) or **bad**
-(weak, lossy, fading). `cold` governs the first; **`stabilize`** handles the
-second. coldspot senses layer 1/2 — signal, PHY rate, channel, loss, fades — per
-wifi interface:
+## Map
 
-| verb | what it does |
-|------|--------------|
-| `coldspot link` | per-interface board: signal + bar, band/channel, PHY rate, loss %, power-save, health score, and which link is active |
-| `coldspot aim [iface]` | live signal meter (dBm + rate, ~2×/s) for positioning an antenna — move it, watch `best` climb, tape it down |
-| `coldspot stabilize auto` | cap just under the link's *measured* ceiling, thin ACKs, shape the download (IFB + CAKE) so it stops collapsing into multi-second latency under load; power-save off. `auto` sizes the cap from the live PHY rate so it never cripples a healthy link |
-
-`coldspot report` also keeps a per-connection reliability history — average/min
-signal and how often each link *dropped* — so a snapshot ("this link is stronger")
-can be checked against the truth ("...but it fades 20× as often").
-
-## Network memory — coldspot owns the policy
-"Metered" is the wrong word for a link that's *free but fragile* (weak public
-wifi) — that's a **quality** problem (`stabilize`), not an **economic** one
-(`cold`). So coldspot stops *reacting* to NetworkManager's metered flag and keeps
-its **own persistent, per-network policy**, keyed by SSID:
-
-```
-coldspot policy                  # Brick → cold, xfinitywifi → stabilize, home → open
-coldspot here stabilize          # set the policy for the network you're on
-coldspot remember Brick cold     # set it for a named network
-coldspot forget xfinitywifi      # drop it (re-seeds next time you're on it)
-```
-
-On roam, coldspot applies *its* remembered policy for the network. A network it
-hasn't seen is **seeded** from the two independent axes — NM-metered → `cold`,
-weak signal → `stabilize`, else `open` — then remembered, so the flag is one
-*seed*, never the master. The daemon owns the truth, including the policy; the
-CLI and pill just read it.
-
-## How it works
-Two halves behind one `status.json` seam:
-
-- **Meter** (`coldspotd`, root) — measures and attributes via a `cgroup/skb`
-  eBPF core (`bpf/coldspot.bpf.c`) that accounts per-app/per-destination and
-  enforces the verdict in one in-kernel pass; it falls back to `/proc/net/dev`
-  + systemd IP accounting when the core isn't loaded. It also keeps an hourly
-  SQLite time-series, watches the NetworkManager connection to auto-govern on
-  roam, and forecasts/flags anomalies. The core builds with only `clang` +
-  `bpftool` (vendored helpers, no libbpf-dev, no Go).
-- **Enforce** (`coldspot-stance`) — the **CAKE** shaper (the smooth speed cap),
-  the nft DSCP marking that gives warmed tasks the priority tin, the eBPF
-  `cold`/`siege` verdict + `critical` safe-list, and the `coldspot.slice`
-  cgroup that holds warmed tasks.
-
-The daemon is the **only** privileged actor: it's the one thing running as
-root, and it drives `coldspot-stance` itself. The unprivileged CLI never uses
-`sudo` — it sends a JSON command over the daemon's control socket
-(`root:coldspot 0660`, `SO_PEERCRED`-gated to root or the `coldspot` group),
-and the daemon performs the operation. There is no passwordless-root grant
-anywhere in the install.
-
-Cold is a capped pipe with priority inside it: warmed tasks (`uncap`/`run`) + DNS
-ride CAKE's latency tin, bulk gets the leftover, connectivity-critical services
-are never throttled, and nothing exceeds the cap. The CLI and GNOME pill only
-read `status.json`, so the kernel details stay below the seam.
-
-## Why not just use OpenSnitch / vnstat?
-coldspot takes OpenSnitch's *shape* — per-app, kernel-sourced attribution — but
-fuses it with budget accounting and a hotspot-survival framing nothing on Linux
-ships together. vnstat meters but can't attribute or block; OpenSnitch attributes
-and blocks but has no budget; Android has the framing but isn't Linux. coldspot
-is the union, in one pill. The novelty is the integration, not the primitives.
+| | |
+|---|---|
+| Use it | [docs/USAGE.md](docs/USAGE.md) |
+| Change it | [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) |
+| Understand how it's built | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Cut a release | [docs/RELEASING.md](docs/RELEASING.md) |
+| See what changed | [CHANGELOG.md](CHANGELOG.md) |
+| Report a vulnerability | [.github/SECURITY.md](.github/SECURITY.md) |
 
 ## Install
-Two steps, deliberately — one needs root, one never does:
+
+Two steps, deliberately: one needs root, one never does.
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/asuramaya/coldspot/main/install.sh | sudo bash
-coldspot-pill install    # as yourself, no sudo — adds the GNOME pill to YOUR account
+coldspot-pill install    # as yourself, no sudo: adds the GNOME pill to YOUR account
 ```
-`install.sh` is root-only and says so plainly if you forget `sudo` — it never
+
+`install.sh` is root-only and says so plainly if you forget `sudo`. It never
 re-invokes itself, so there's exactly one privilege hop, always, and no
-ambiguity about which account it's acting on. It installs the daemon + root
+ambiguity about which account it's acting on. It installs the daemon and root
 helpers, builds the eBPF core from the local kernel BTF, creates a `coldspot`
-group and adds you to it (the CLI needs it to reach the daemon's control
-socket — **log out and back in once**, or `newgrp coldspot`, to pick it up),
-and installs the daily update timer **disabled** (see below). It does *not*
-touch the GNOME pill — that only ever needed your own `$HOME` and your own
-gnome-shell session, never root, so `coldspot-pill install` is its own
-per-account step (handy on a shared box: every account runs it for itself).
+group and adds you to it (**log out and back in once**, or `newgrp coldspot`,
+to pick it up), and installs the daily update timer **disabled**. Auto-update
+is opt-in, see [docs/USAGE.md](docs/USAGE.md#updating).
 
 Or from a checkout: `sudo make install`, then `make pill`.
 
@@ -138,65 +65,19 @@ Or from a checkout: `sudo make install`, then `make pill`.
 coldspot status              # the meter
 coldspot update [--check]    # pull a newer release now (manual; signature-verified)
 curl -fsSL https://raw.githubusercontent.com/asuramaya/coldspot/main/uninstall.sh | sudo bash
-coldspot-pill remove         # as yourself — the uninstaller doesn't touch your home
+coldspot-pill remove         # as yourself: the uninstaller doesn't touch your home
 ```
-Per-app talkers in v0 need systemd IP accounting (the installer prints the
-one-liner). The v1 BPF core is built at install time — see `bpf/README.md`.
 
-Auto-update is **opt-in**: it's a root process running unattended, so it stays
-off until you set `auto_update = on` in `/etc/coldspot.conf` and enable the
-timer (`sudo systemctl enable --now coldspot-update.timer`). It refuses to
-install anything unless the release's checksum manifest carries a valid SSH
-signature (`ssh-keygen -Y verify`, FIDO2 hardware key) against a pinned
-principal — see `docs/RELEASE-SIGNING.md`; a bare version bump with no
-signature is rejected, not trusted.
+## Why not just use OpenSnitch / vnstat?
 
-## Status
-**v0.4.2 — honest installer** removed the last piece of self-elevating-script
-magic: `install.sh`/`uninstall.sh` never re-invoke themselves under `sudo`
-(they just say so and stop if you forget it), and the GNOME pill — which
-never needed root — is its own per-account step (`coldspot-pill`). One
-sudo hop, always typed by a human, never nested. **v0.4.1 — privilege
-hardening** followed a hostile self-audit: the daemon is
-now the only privileged actor on the machine (no `sudo`, no passwordless-root
-grant), the control socket and state files are locked to a `coldspot` group,
-and auto-update is opt-in and signature-verified. See the changelog for the
-full list. **v0.4.0 — multi-radio** turns two or more radios into one smart link: health
-ranking, hands-free failover (`steer`/auto-steer), and health-gated aggregation
-of independent uplinks (`coldspot bond`). **v0.3.0 — the link-aware axis** added
-layer-1/2 sensing and the network-policy pivot: `coldspot link`/`aim`/`stabilize`,
-a per-connection signal + fade history, an adaptive shaper that follows the RF,
-and a per-network policy store. The v0.2.0 governance + analysis stack:
+coldspot takes OpenSnitch's *shape*, per-app, kernel-sourced attribution, but
+fuses it with budget accounting and a hotspot-survival framing nothing on Linux
+ships together. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full
+comparison and how the eBPF core and the control socket are built.
 
-- **Govern** — `cold` auto-engages on metered links: a smooth CAKE speed cap with
-  warmed tasks + DNS prioritized inside it, a never-throttle floor for critical
-  connectivity, and a panic `coldspot open`. `coldspot limit <rate>` sets a hard
-  cap by hand; `coldspot uncap <app>` warms a task into the priority lane.
-- **Attribute** — per-app *and* per-destination, with the ↑/↓ split, pre-existing
-  connections resolved by name (no more `?`), and hostnames from a passive DNS
-  snoop.
-- **Analyse** — `coldspot top` (live ↑/↓), `coldspot report` (by connection/app
-  over day/week/month, from a SQLite time-series), `coldspot history`/`ledger`, a
-  budget **cap-ETA forecast**, and **learned anomaly detection** that flags an app
-  blowing past its own baseline.
-- **Cockpit** — the GNOME pill surfaces all of it and is tappable: stance, warm a
-  task, set a cap, and desktop notifications when the link goes cold or an app
-  misbehaves.
-
-Deferred: explicit per-app `cap <app> <rate>` and a hard ingress download cap.
-
-## Develop
-```sh
-make check     # CI-equivalent static checks (lint, parse, unit + contract tests)
-make smoke     # boot the daemon against a fake iface, assert status.json shape
-make deploy    # smoke-test, then push bins+bpf+daemon into place and reload (sudo)
-```
-`make deploy` is the local-iteration ritual: it runs the smoke test first, then
-installs the binaries (the loader included), rebuilds the eBPF object, and
-reloads the core in the one order that makes new programs actually attach — only
-restarting pieces that were already running. The unit suite includes a
-BPF↔daemon map-layout contract test, so a change to the `flow_key` struct that
-isn't mirrored in the decoder fails in `make check` rather than on your machine.
+coldspot belongs to a family of small GNOME utilities that share a runtime
+backbone, an update spine and a signed-release chain.
 
 ## License
+
 GPL-3.0-or-later.

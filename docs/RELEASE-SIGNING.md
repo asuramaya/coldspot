@@ -1,13 +1,12 @@
 # Release signing
 
-Status: **mechanism built, not yet enforcing.** `release-signing/allowed_signers`
-(and its `install.sh`-embedded twin, `RELEASE_ALLOWED_SIGNERS`) are currently
-empty — no signing key has been provisioned. Until one is: `install.sh`'s
-curl-pipe-bash bootstrap degrades to sha256-only with a printed warning;
-`coldspot-update` (the unattended daily auto-updater) refuses to install
-anything at all. The moment a real key exists in both places and a release
-ships a matching `coldspot.tar.gz.sha256.sig`, verification becomes mandatory
-and fail-closed automatically — no further code changes needed.
+Status: **armed, since v0.5.0.** `release-signing/allowed_signers` (and its
+`install.sh`-embedded twin, `RELEASE_ALLOWED_SIGNERS`) carry all 4 canonical
+`ra-master` hardware-key entries. Verification is mandatory and fail-closed for
+every client installed from v0.5.0 onward: `install.sh`'s bootstrap and
+`coldspot-update` both refuse to install anything whose release doesn't carry a
+valid `coldspot.tar.gz.sha256.sig` from the pinned principal. There is no flag
+to turn this back off; arming is one-way (see "Sequencing rule" below).
 
 ## Why this exists
 
@@ -71,11 +70,11 @@ append — RA's first ceremony left 3 of 4 keys unpinned that way by appending
 one at a time. Refuses to run unless it finds exactly 4 canonical keys.
 
 **Sequencing rule (do not skip):** `make sync-signers` populates the anchor.
-Run it ONLY in the same act as cutting the operator's first signed coldspot
-release — arming it any earlier bricks `coldspot-update` against every
-existing unsigned release (see "Verification semantics" below). Until then,
-`release-signing/allowed_signers` ships empty and CI's `sync-signers` check
-(`.github/workflows/signing-sync.yml`) just confirms that stays true.
+Run it ONLY in the same act as cutting the maintainer's first signed release —
+arming any earlier bricks `coldspot-update` against every existing unsigned
+release. coldspot armed at v0.5.0; every release since has been signed. CI's
+`sync-signers` check (`.github/workflows/signing-sync.yml`) now confirms the
+anchor stays in sync with the canonical keys, not that it stays empty.
 
 ## Per-release signing (maintainer, needs the FIDO2 key attached + a touch)
 
