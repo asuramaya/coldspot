@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: One version constant (REPO-STANDARD.md)
+        run: |
+          if grep -rn 'VERSION[[:space:]]*=[[:space:]]*['"'"'"][0-9]' \
+              bin/coldspot bin/coldspotd bin/coldspot-stance bin/coldspot-bpf \
+              bin/coldspot-update bin/coldspot-pill install.sh uninstall.sh \
+              tools/deploy.sh tools/sync-signers.sh \
+              extension/coldspot@asuramaya/extension.js 2>/dev/null; then
+            echo "::error::a literal version string exists outside packaging/VERSION"
+            exit 1
+          fi
+
+      - name: ShellCheck
+        # Exclusions, if this ever needs any, belong as -e SC... flags here,
+        # not --rcfile: that flag only exists from shellcheck 0.11.0, and
+        # ubuntu-latest has shipped older builds that reject it outright.
+        run: shellcheck install.sh uninstall.sh bin/coldspot-stance bin/coldspot-bpf bin/coldspot-update bin/coldspot-pill tools/deploy.sh tools/sync-signers.sh tests/test_signing.sh
+
+      - name: Python (syntax)
+        run: python3 -m py_compile bin/coldspotd bin/coldspot bin/sutra.py
+
+      - name: Sutra vendor drift guard
+        run: make check-sutra
+
+      - name: GNOME extension (syntax)
+        run: node --check "extension/coldspot@asuramaya/extension.js"
+
+      - name: GNOME extension metadata (valid JSON)
+        run: python3 -c "import json; json.load(open('extension/coldspot@asuramaya/metadata.json'))"
+
+      - name: Unit + contract tests
+        run: python3 tests/test_units.py
+
+      - name: Release-signing verify path
+        run: bash tests/test_signing.sh
+
+      - name: Daemon smoke test
+        run: bash tests/smoke.sh
+
+      - name: Control socket fuzz (adversarial, no root)
+        run: python3 tests/attack_socket.py

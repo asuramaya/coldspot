@@ -143,7 +143,7 @@ EOF
 # typed. If it's unset (e.g. you're in a plain root shell, not via sudo), we
 # say so plainly rather than guessing.
 REAL_USER="${SUDO_USER:-}"
-VERSION="$(tr -d '[:space:]' < "$SRC/VERSION" 2>/dev/null || echo unknown)"
+VERSION="$(tr -d '[:space:]' < "$SRC/packaging/VERSION" 2>/dev/null || echo unknown)"
 
 echo "== coldspot ${VERSION} installer =="
 
@@ -158,7 +158,7 @@ done
 # right next to them in $BINDIR, not under $SHAREDIR.
 install -m 0644 -o root -g root "$SRC/bin/sutra.py" "$BINDIR/sutra.py"
 install -d -m 0755 "$SHAREDIR"
-install -m 0644 "$SRC/VERSION" "$SHAREDIR/VERSION"
+install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
 
 # 2. bpf core sources + build (clang + local BTF, no network)
 echo "-- bpf core sources -> $SHAREDIR/bpf"

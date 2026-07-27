@@ -9,7 +9,7 @@ step, and the signing key never goes near CI.
 
 ## 1. Prepare
 
-Bump `VERSION`. It's the one version constant; `release.yml` asserts it matches the tag.
+Bump `packaging/VERSION`. It's the one version constant; `release.yml` asserts it matches the tag.
 
 Write the `CHANGELOG.md` entry for the release. Small, focused releases are easier to sign off
 on than a pile of unrelated changes.
@@ -64,8 +64,8 @@ releases and shows anything published without a `.sig` as awaiting the seal.
 
 ## When it goes wrong
 
-**The tag assertion fails** means `VERSION` and the tag disagree. Fix it, delete the tag, tag
-again.
+**The tag assertion fails** means `packaging/VERSION` and the tag disagree. Fix it, delete the
+tag, tag again.
 
 **A client reports "armed but release is unsigned"** means the release was published and never
 sealed. Nothing is broken in the artifact; it needs the operator's signature uploading.

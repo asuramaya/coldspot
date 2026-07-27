@@ -57,10 +57,15 @@ check: lint check-sutra
 	bash tests/test_signing.sh
 	@echo "all static checks passed"
 
-# Drift guard for the vendored sutra copy: integrity (hash matches what
-# vendor.sh recorded — the copy wasn't hand-edited) always runs; freshness
-# (diff against the canonical source) only when that checkout is present,
-# which it normally isn't in CI.
+# Drift guard for the vendored sutra copy. Integrity (hash matches what
+# vendor.sh recorded, so the copy wasn't hand-edited) is a hard failure and
+# always runs. Freshness, when the canonical checkout is present (normally
+# isn't in CI), is three-way: compared against sutra.py's OWN last-modifying
+# commit in canonical, never canonical repo HEAD (decision 325b1969, sutra
+# 0.7.3: comparing against repo HEAD false-positives LAG on every commit
+# canonical ships, including ones that never touch sutra.py). Recorded at or
+# after that commit -> fresh. A strict ancestor of it -> LAG, a real vendor
+# gap, warn only. Not in canonical's history at all -> DRIFT, hard fail.
 check-sutra:
 	@ver=$$(cut -d' ' -f1 bin/sutra.version); \
 	sha=$$(awk '{print $$NF}' bin/sutra.version); \
@@ -71,14 +76,24 @@ check-sutra:
 	    exit 1; \
 	fi; \
 	echo "check-sutra: integrity ok (sutra $$ver, sha256 $$sha)"; \
-	canon="$$HOME/code/REPOS/sutra/sutra.py"; \
-	if [ -f "$$canon" ]; then \
-	    if cmp -s bin/sutra.py "$$canon"; then \
-	        echo "check-sutra: freshness ok (matches canonical)"; \
+	canon="$$HOME/code/REPOS/sutra"; \
+	if [ -d "$$canon/.git" ]; then \
+	    if [ ! -f bin/sutra.commit ]; then \
+	        echo "check-sutra: freshness unknown (no bin/sutra.commit anchor, an older vendor)"; \
 	    else \
-	        echo "check-sutra FAIL: bin/sutra.py differs from canonical $$canon (re-vendor)"; \
-	        exit 1; \
+	        recorded=$$(cat bin/sutra.commit); \
+	        filehead=$$(git -C "$$canon" log -1 --format=%H -- sutra.py); \
+	        if git -C "$$canon" merge-base --is-ancestor "$$filehead" "$$recorded" 2>/dev/null; then \
+	            echo "check-sutra: freshness ok (vendored from $$recorded, at or after sutra.py's own head $$filehead)"; \
+	        elif git -C "$$canon" merge-base --is-ancestor "$$recorded" "$$filehead" 2>/dev/null; then \
+	            echo "check-sutra: LAG (vendored from $$recorded, sutra.py has since moved to $$filehead) -- warn, not a failure"; \
+	        else \
+	            echo "check-sutra FAIL: DRIFT (vendored commit $$recorded is not in canonical's history at $$canon) -- re-vendor"; \
+	            exit 1; \
+	        fi; \
 	    fi; \
+	else \
+	    echo "check-sutra: canonical sutra checkout not present, freshness skipped"; \
 	fi
 
 bpf:

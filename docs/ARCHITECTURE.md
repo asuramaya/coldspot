@@ -16,13 +16,14 @@ systemd/      coldspotd.service, coldspot-update.timer/.service
 extension/    the GNOME Shell pill (coldspot@asuramaya)
 tools/        deploy.sh, sync-signers.sh
 release-signing/  allowed_signers (the SSH-signature trust anchor)
+packaging/    VERSION (the one version constant)
 tests/        smoke.sh, attack_socket.py, test_units.py, test_signing.sh
 docs/         this file, USAGE.md, RELEASING.md, RELEASE-SIGNING.md
 ```
 
 This mirrors the family's `src/`/`packaging/` split conceptually (bin+bpf+config+systemd+
 extension are the runtime, tools+release-signing are packaging-adjacent), without yet having
-made the move. See **Standard exemptions** below.
+made the rest of the move. See **Standard exemptions** below.
 
 ## Meter: measuring and attributing
 
@@ -156,8 +157,7 @@ integration, not the primitives.
 * Bash runs under `set -euo pipefail` and stays ShellCheck-clean. Exclusions are passed as
   `-e SC…` flags in the lint recipe, not an rc file: `--rcfile` only exists from shellcheck
   0.11.0, and ubuntu-latest ships older.
-* One version constant: `VERSION` at the repo root. Nothing else carries a literal version
-  string.
+* One version constant: `packaging/VERSION`. Nothing else carries a literal version string.
 * The daemon owns the truth. The CLI and pill only read `status.json` or send a socket command;
   neither one grows logic that belongs in `coldspotd`.
 * Names that come off the network or a raw `/proc` read (SSIDs, `comm` strings) are untrusted

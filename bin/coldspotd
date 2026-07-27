@@ -1482,7 +1482,7 @@ def _coldspot_authz(uid, _gid):
 
 def _read_daemon_version():
     for p in ("/usr/local/share/coldspot/VERSION", "/usr/share/coldspot/VERSION",
-              os.path.join(HERE, "..", "VERSION")):
+              os.path.join(HERE, "..", "packaging", "VERSION")):
         try:
             return open(p).read().strip()
         except OSError:

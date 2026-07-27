@@ -19,7 +19,7 @@ PREFIX="${PREFIX:-/usr/local}"
 BINDIR="$PREFIX/bin"
 SHAREDIR="$PREFIX/share/coldspot"
 PIN="/sys/fs/bpf/coldspot"
-VERSION="$(tr -d '[:space:]' < "$SRC/VERSION" 2>/dev/null || echo unknown)"
+VERSION="$(tr -d '[:space:]' < "$SRC/packaging/VERSION" 2>/dev/null || echo unknown)"
 
 # 1. SMOKE FIRST — as the invoking user, before any privilege. A failing smoke
 #    aborts here, before we've changed a single installed file or prompted sudo.
@@ -48,7 +48,7 @@ done
 # coldspotd/coldspot both `import sutra` as a sibling — see install.sh's note.
 install -m 0644 -o root -g root "$SRC/bin/sutra.py" "$BINDIR/sutra.py"
 install -d -m 0755 "$SHAREDIR"
-install -m 0644 "$SRC/VERSION" "$SHAREDIR/VERSION"
+install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
 
 # GNOME pill source, staged the same way as bpf sources below — never installed
 # into an account from here; run `coldspot-pill install` (as yourself) for that.

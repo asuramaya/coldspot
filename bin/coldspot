@@ -788,7 +788,7 @@ def cmd_version(args):
     for p in (os.path.join(HERE, "..", "share", "coldspot", "VERSION"),
               "/usr/local/share/coldspot/VERSION",
               "/usr/share/coldspot/VERSION",
-              os.path.join(HERE, "..", "VERSION")):
+              os.path.join(HERE, "..", "packaging", "VERSION")):
         try:
             print("coldspot", open(p).read().strip())
             return
