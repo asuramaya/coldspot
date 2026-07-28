@@ -17,7 +17,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # runs that preamble same as any other import, so it inserts a nonexistent path
 # at sys.path[0] harmlessly. Insert the real dev-tree location explicitly so
 # `import sutra` still resolves, same as a real install finds it on sys.path.
-sys.path.insert(0, os.path.join(HERE, "src", "data", "lib"))
+sys.path.insert(0, os.path.join(HERE, "src", "share", "coldspot", "lib"))
 _loader = importlib.machinery.SourceFileLoader(
     "coldspotd", os.path.join(HERE, "src", "bin", "coldspotd"))
 _spec = importlib.util.spec_from_loader("coldspotd", _loader)

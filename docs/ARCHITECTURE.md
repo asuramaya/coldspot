@@ -12,8 +12,8 @@ src/bin/          coldspot (CLI), coldspotd (daemon), coldspot-stance, coldspot-
                    coldspot-update, coldspot-pill (per-account installer)
 src/bpf/          coldspot.bpf.c, coldspot_helpers.h, vmlinux.h (generated, not committed logic)
 src/data/config/  coldspot.conf defaults
-src/data/lib/     vendored sutra*.py (private per-pill dir, installed to $SHAREDIR/lib -- never
-                   the shared bin dir; see Conventions, below)
+src/share/coldspot/lib/   vendored sutra*.py (private per-pill dir; a checkout's own analog of
+                   $SHAREDIR/lib -- see Conventions, below, for why it has to sit here)
 src/data/systemd/system/  coldspotd.service, coldspot-update.timer/.service
 src/data/man/     coldspot.1, coldspotd.8
 src/extension/    the GNOME Shell pill (coldspot@asuramaya)
@@ -160,15 +160,24 @@ integration, not the primitives.
   neither one grows logic that belongs in `coldspotd`.
 * Names that come off the network or a raw `/proc` read (SSIDs, `comm` strings) are untrusted
   and reach displays/logs as sanitized text only.
-* `src/data/lib/sutra*.py` are vendored byte-identical from the `sutra` repo, into a private
+* `src/share/coldspot/lib/sutra*.py` are vendored byte-identical from the `sutra` repo, into a private
   per-pill dir rather than the shared bin dir (two pills vendoring identically-named files into
   the same `/usr/local/bin` make each other uninstallable; ruling `3e44bd95`). `make check-sutra`
   proves each copy: integrity is a hard failure, freshness is three-way (match, lag-warns, or
   drift-fails against canonical history). Every binary that imports sutra carries the canonical
   bootstrap preamble (see `sutra`'s `BOOTSTRAP.md`) right before the `import sutra` line, which
-  locates `$SHAREDIR/lib` relative to its own installed path — never hand-derive this, re-vendor
-  with `--bootstrap=coldspot` instead. `coldspotd` uses `sutra` directly: `ControlServer` is the
-  control socket, `write_status()` is every atomic state write.
+  locates the lib dir as `dirname(dirname(realpath(__file__)))/share/coldspot/lib` — relative to
+  the binary's own location, never told a prefix. That is why the vendored copy has to live at
+  `src/share/coldspot/lib/` and not somewhere more "natural" like `src/data/`: a binary run
+  straight from the checkout sits at `src/bin/`, so `dirname(dirname(...))` lands on `src/`, not
+  the repo root — the checkout's own analog of `$PREFIX` is `src/`, not `.`. Any other path here
+  silently breaks `python3 src/bin/coldspot` run uninstalled, exactly the way it did the first
+  time this moved (caught by CI reading green over a broken checkout — the staged-prefix test
+  harnesses proved the layout resolves in general, not that the repo as it actually sits on disk
+  does; `tests/smoke.sh`'s first check now runs a binary from the checkout in place to catch this
+  class directly). Never hand-derive the path, re-vendor with `--bootstrap=coldspot` instead.
+  `coldspotd` uses `sutra` directly: `ControlServer` is the control socket, `write_status()` is
+  every atomic state write.
 
 ## Standard exemptions
 
@@ -179,7 +188,7 @@ choice.
 | Item | Why |
 |---|---|
 | daemon runs fully as root, not capability-dropped | the v1 BPF core and its loader need `CAP_BPF`/`CAP_NET_ADMIN`, and coldspot hasn't yet split a capability-scoped worker off the daemon. Tracked as future work, not a rejected idea; see the commented `AmbientCapabilities` line in `src/data/systemd/system/coldspotd.service` |
-| `src/data/lib/sutra_update.py` and `src/data/lib/sutra_xen.py` are vendored but unused | `coldspot-update` is still a hand-rolled bash script with its own SSH-signature verification, not yet a thin wrapper over `sutra_update.main()`. That's a real behavior-changing rewrite of the signature-verification path, deliberately sequenced on its own rather than riding this pass. `sutra_xen.py` has no coldspot integration point yet |
-| `check-sutra` only proves the dev-tree copy under `src/data/lib/`, not the installed copy under `$SHAREDIR/lib` | the same sha256/anchor logic applies unchanged once pointed at the installed path; wiring it in is Pass 4's `check_health` item, so the installed copy stays checkable rather than just assumed |
+| `src/share/coldspot/lib/sutra_update.py` and `src/share/coldspot/lib/sutra_xen.py` are vendored but unused | `coldspot-update` is still a hand-rolled bash script with its own SSH-signature verification, not yet a thin wrapper over `sutra_update.main()`. That's a real behavior-changing rewrite of the signature-verification path, deliberately sequenced on its own rather than riding this pass. `sutra_xen.py` has no coldspot integration point yet |
+| `check-sutra` only proves the dev-tree copy under `src/share/coldspot/lib/`, not the installed copy under `$SHAREDIR/lib` | the same sha256/anchor logic applies unchanged once pointed at the installed path; wiring it in is Pass 4's `check_health` item, so the installed copy stays checkable rather than just assumed |
 | `extension.js` keeps local `PALETTE`/`CHIP`/`CHIP_ON`/`dataRow` instead of importing `pill.js` | both now exist side by side after the latest sutra re-vendor; collapsing the duplicate is a safe, separately-tracked cleanup (the vendored `dataRow` is coldspot's own row layout, promoted into the family commons) |
 | no `.deb` yet | owed under a standing ruling, sized as its own milestone; a new artifact type needs its own verification and shouldn't ride a doc/CI/tree pass |

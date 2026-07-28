@@ -164,7 +164,7 @@ install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
 # the installed copy stays checkable, not just the dev-tree one.
 echo "-- vendored sutra -> $SHAREDIR/lib"
 install -d -m 0755 "$SHAREDIR/lib"
-for f in "$SRC"/src/data/lib/*; do
+for f in "$SRC"/src/share/coldspot/lib/*; do
   install -m 0644 -o root -g root "$f" "$SHAREDIR/lib/$(basename "$f")"
 done
 # An older install left its vendored copies beside the binaries in $BINDIR —

@@ -22,7 +22,7 @@ help:
 	@echo "  make bpf           build the eBPF core from local kernel BTF"
 	@echo "  make smoke         run the no-root smoke test"
 	@echo "  make attack        fuzz the control socket adversarially (no root)"
-	@echo "  make check-sutra   verify the vendored src/data/lib/sutra*.py wasn't hand-edited (+ freshness if canon is checked out)"
+	@echo "  make check-sutra   verify the vendored src/share/coldspot/lib/sutra*.py wasn't hand-edited (+ freshness if canon is checked out)"
 	@echo "  make check-repo    verify the repo matches REPO-STANDARD.md's structural gate"
 	@echo "  make sync-signers  rebuild packaging/release-signing/allowed_signers from the canonical keys (see docs/RELEASE-SIGNING.md — do NOT run casually)"
 	@echo "  make clean         remove build artifacts"
@@ -63,7 +63,7 @@ lint:
 # failure phanspeed hit -- a shellcheck/py_compile list hand-duplicated into
 # ci.yml silently fell out of sync with the Makefile after Wave A).
 pycheck:
-	python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/data/lib/sutra.py
+	python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/share/coldspot/lib/sutra.py
 
 check: lint check-sutra pycheck
 	bash -n install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-update src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh
@@ -75,7 +75,7 @@ check: lint check-sutra pycheck
 
 # Drift guard for the three vendored sutra modules (sutra, sutra_update,
 # sutra_xen — vendored unconditionally, whether or not coldspot imports each
-# one yet), now living in src/data/lib/ per the private-lib-dir move (ruling
+# one yet), now living in src/share/coldspot/lib/ per the private-lib-dir move (ruling
 # 3e44bd95) rather than beside the binaries. Integrity (hash matches what
 # vendor.sh recorded, so the copy wasn't hand-edited) is a hard failure and
 # always runs, per module. Freshness, when the canonical checkout is present
@@ -91,13 +91,13 @@ check-sutra:
 	@canon="$$HOME/code/REPOS/sutra"; \
 	fail=0; \
 	for mod in sutra sutra_update sutra_xen; do \
-	    py="src/data/lib/$$mod.py"; ver="src/data/lib/$$mod.version"; cmt="src/data/lib/$$mod.commit"; \
+	    py="src/share/coldspot/lib/$$mod.py"; ver="src/share/coldspot/lib/$$mod.version"; cmt="src/share/coldspot/lib/$$mod.commit"; \
 	    v=$$(cut -d' ' -f1 "$$ver"); \
 	    sha=$$(awk '{print $$NF}' "$$ver"); \
 	    actual=$$(sha256sum "$$py" | cut -d' ' -f1); \
 	    if [ "$$sha" != "$$actual" ]; then \
 	        echo "check-sutra FAIL: $$py doesn't match $$ver" \
-	             "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh src/data/lib src/extension/coldspot@asuramaya --bootstrap=coldspot)"; \
+	             "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh src/share/coldspot/lib src/extension/coldspot@asuramaya --bootstrap=coldspot)"; \
 	        fail=1; continue; \
 	    fi; \
 	    echo "check-sutra: integrity ok ($$mod $$v, sha256 $$sha)"; \

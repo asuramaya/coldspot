@@ -40,11 +40,11 @@ socket) and a real daemon behind it, and the fuzzer exists specifically to keep 
 honest.
 
 If `check-sutra` reports lag, the shared `sutra` repo has moved ahead. Re-vendor rather than
-editing `src/data/lib/sutra*.py` in place. They're vendored byte-identical on purpose, and hand
+editing `src/share/coldspot/lib/sutra*.py` in place. They're vendored byte-identical on purpose, and hand
 edits are exactly what the integrity check exists to catch:
 
 ```bash
-bash ~/code/REPOS/sutra/vendor.sh src/data/lib src/extension/coldspot@asuramaya --bootstrap=coldspot
+bash ~/code/REPOS/sutra/vendor.sh src/share/coldspot/lib src/extension/coldspot@asuramaya --bootstrap=coldspot
 ```
 
 If the printed bootstrap preamble differs from what's already pasted into `src/bin/coldspot` and

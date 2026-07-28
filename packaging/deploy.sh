@@ -50,7 +50,7 @@ install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
 # coldspotd/coldspot both `import sutra` as a sibling, via the bootstrap
 # preamble — see install.sh's note. Private per-pill dir, never $BINDIR.
 install -d -m 0755 "$SHAREDIR/lib"
-for f in "$SRC"/src/data/lib/*; do
+for f in "$SRC"/src/share/coldspot/lib/*; do
   install -m 0644 -o root -g root "$f" "$SHAREDIR/lib/$(basename "$f")"
 done
 rm -f "$BINDIR"/sutra*.py "$BINDIR"/sutra*.version "$BINDIR"/sutra*.commit

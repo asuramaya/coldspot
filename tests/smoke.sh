@@ -10,6 +10,22 @@ python3 -c "import ast,sys; ast.parse(open('$HERE/src/bin/coldspotd').read()); \
 bash -n "$HERE/src/bin/coldspot-stance" && bash -n "$HERE/src/bin/coldspot-pill" && echo "stance parse: ok"
 bash -n "$HERE/install.sh" && bash -n "$HERE/uninstall.sh" && echo "install parse: ok"
 
+# Prove the checkout runs AS-IS, uninstalled -- not just that it parses, and
+# not just that a STAGED install-shaped prefix (below) resolves the sutra
+# bootstrap preamble. A binary invoked straight from src/bin/ derives its lib
+# dir relative to src/, not the repo root (see docs/ARCHITECTURE.md's
+# Conventions), so the vendored copy has to live at src/share/coldspot/lib/
+# specifically. CI went green over exactly this being broken once already
+# (ffca7b1): every other check in this file proves the staged layout, never
+# the checkout as it actually sits on disk -- this one line would have caught
+# it before it ever pushed.
+"$HERE/src/bin/coldspot" --help > /dev/null
+python3 -c "
+import runpy
+runpy.run_path('$HERE/src/bin/coldspotd', run_name='not_main')
+"
+echo "checkout (uninstalled) import+run: ok"
+
 # run the daemon in a throwaway runtime dir as the current user. PFX mimics
 # an install prefix (bin/ + share/coldspot/lib/) so the daemon's sutra
 # bootstrap preamble -- which locates the lib dir relative to its own
@@ -20,7 +36,7 @@ RUN="$(mktemp -d)"; export RUN
 PFX="$(mktemp -d)"
 mkdir -p "$PFX/bin" "$PFX/share/coldspot/lib"
 sed "s#/run/coldspot#$RUN#; s#/var/lib/coldspot#$RUN#" "$HERE/src/bin/coldspotd" > "$PFX/bin/d"
-cp "$HERE/src/data/lib/sutra.py" "$PFX/share/coldspot/lib/sutra.py"
+cp "$HERE/src/share/coldspot/lib/sutra.py" "$PFX/share/coldspot/lib/sutra.py"
 python3 "$PFX/bin/d" & D=$!
 trap 'kill $D 2>/dev/null || true; rm -rf "$RUN" "$PFX"' EXIT
 for _ in $(seq 1 10); do [[ -e "$RUN/status.json" ]] && break; sleep 0.5; done

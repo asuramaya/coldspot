@@ -90,7 +90,7 @@ _src = _src.replace("/run/coldspot", run_dir).replace("/var/lib/coldspot", run_d
 _daemon = os.path.join(bin_dir, "coldspotd")
 with open(_daemon, "w") as f:
     f.write(_src)
-shutil.copy(os.path.join(HERE, "src", "data", "lib", "sutra.py"), os.path.join(lib_dir, "sutra.py"))
+shutil.copy(os.path.join(HERE, "src", "share", "coldspot", "lib", "sutra.py"), os.path.join(lib_dir, "sutra.py"))
 
 SOCK = os.path.join(run_dir, "control.sock")
 STATUS = os.path.join(run_dir, "status.json")
