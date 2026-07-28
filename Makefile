@@ -9,7 +9,7 @@ EXT := src/extension/coldspot@asuramaya
 # (has_signing_key()'s optional arg is genuinely optional, called both ways).
 SHELLCHECK_EXCLUDES = SC2015,SC2119,SC2120
 
-.PHONY: help install pill deploy uninstall check lint bpf smoke attack sync-signers check-sutra check-repo clean
+.PHONY: help install pill deploy uninstall check lint pycheck bpf smoke attack sync-signers check-sutra check-repo clean
 
 help:
 	@echo "coldspot targets:"
@@ -57,8 +57,15 @@ lint:
 	-ruff check src/bin/coldspot src/bin/coldspotd 2>/dev/null || true
 	shellcheck -e $(SHELLCHECK_EXCLUDES) install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-update src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh tests/test_signing.sh
 
-check: lint check-sutra
+# Kept as its own target (not just a line inside `check`) so ci.yml can call
+# it directly: REPO-STANDARD.md's rule is that ci.yml invokes make targets,
+# never hand-copies a file list that can drift from this one (the exact
+# failure phanspeed hit -- a shellcheck/py_compile list hand-duplicated into
+# ci.yml silently fell out of sync with the Makefile after Wave A).
+pycheck:
 	python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/bin/sutra.py
+
+check: lint check-sutra pycheck
 	bash -n install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-update src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh
 	node --check $(EXT)/extension.js
 	python3 -c "import json; json.load(open('$(EXT)/metadata.json'))"
@@ -136,7 +143,7 @@ check-repo:
 	if [ ! -e src/data/man/man1/coldspot.1 ] && ! grep -q 'man1/coldspot.1' docs/ARCHITECTURE.md 2>/dev/null; then \
 	    echo "check-repo FAIL: no src/data/man/man1/coldspot.1 and no exemption for it"; fail=1; \
 	fi; \
-	rows=$$(find . -maxdepth 1 -mindepth 1 ! -name .git ! -name .claude ! -name .mcp.json ! -name .ruff_cache | wc -l); \
+	rows=$$(git ls-files | cut -d/ -f1 | sort -u | wc -l); \
 	if [ "$$rows" -gt 12 ]; then \
 	    echo "check-repo FAIL: root has $$rows rows, standard caps it at 12"; fail=1; \
 	else \
