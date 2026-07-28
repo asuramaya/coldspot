@@ -46,7 +46,11 @@ echo "-- removing files"
 for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
   rm -f "$BINDIR/$b"
 done
-rm -f "$BINDIR/sutra.py"   # vendored sibling import, installed alongside coldspotd/coldspot
+# $SHAREDIR/lib (the current vendor location) is covered by the rm -rf below.
+# An install from before the private-lib-dir move (ruling 3e44bd95) may still
+# have left copies beside the binaries — nothing else on the machine cleans
+# those up, so a plain uninstall must still catch them.
+rm -f "$BINDIR"/sutra*.py "$BINDIR"/sutra*.version "$BINDIR"/sutra*.commit
 rm -f "$UNITDIR/coldspotd.service" "$UNITDIR/coldspot-update.service" "$UNITDIR/coldspot-update.timer"
 rm -f "$PREFIX/share/man/man1/coldspot.1" "$PREFIX/share/man/man8/coldspotd.8"
 rm -f /etc/sudoers.d/coldspot

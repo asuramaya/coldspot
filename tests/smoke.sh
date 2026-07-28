@@ -10,12 +10,19 @@ python3 -c "import ast,sys; ast.parse(open('$HERE/src/bin/coldspotd').read()); \
 bash -n "$HERE/src/bin/coldspot-stance" && bash -n "$HERE/src/bin/coldspot-pill" && echo "stance parse: ok"
 bash -n "$HERE/install.sh" && bash -n "$HERE/uninstall.sh" && echo "install parse: ok"
 
-# run the daemon in a throwaway runtime dir as the current user
+# run the daemon in a throwaway runtime dir as the current user. PFX mimics
+# an install prefix (bin/ + share/coldspot/lib/) so the daemon's sutra
+# bootstrap preamble -- which locates the lib dir relative to its own
+# installed path, dirname(dirname(realpath(__file__)))/share/coldspot/lib --
+# resolves for real, the same as it would under $PREFIX. RUN is separate:
+# just the runtime state dir (/run, /var/lib), not the install layout.
 RUN="$(mktemp -d)"; export RUN
-sed "s#/run/coldspot#$RUN#; s#/var/lib/coldspot#$RUN#" "$HERE/src/bin/coldspotd" > "$RUN/d"
-cp "$HERE/src/bin/sutra.py" "$RUN/sutra.py"   # coldspotd imports it as a sibling
-python3 "$RUN/d" & D=$!
-trap 'kill $D 2>/dev/null || true; rm -rf "$RUN"' EXIT
+PFX="$(mktemp -d)"
+mkdir -p "$PFX/bin" "$PFX/share/coldspot/lib"
+sed "s#/run/coldspot#$RUN#; s#/var/lib/coldspot#$RUN#" "$HERE/src/bin/coldspotd" > "$PFX/bin/d"
+cp "$HERE/src/data/lib/sutra.py" "$PFX/share/coldspot/lib/sutra.py"
+python3 "$PFX/bin/d" & D=$!
+trap 'kill $D 2>/dev/null || true; rm -rf "$RUN" "$PFX"' EXIT
 for _ in $(seq 1 10); do [[ -e "$RUN/status.json" ]] && break; sleep 0.5; done
 
 python3 - "$RUN" <<'PY'

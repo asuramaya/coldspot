@@ -45,10 +45,15 @@ echo "== bins -> $BINDIR =="
 for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
   install -m 0755 -o root -g root "$SRC/src/bin/$b" "$BINDIR/$b"
 done
-# coldspotd/coldspot both `import sutra` as a sibling — see install.sh's note.
-install -m 0644 -o root -g root "$SRC/src/bin/sutra.py" "$BINDIR/sutra.py"
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
+# coldspotd/coldspot both `import sutra` as a sibling, via the bootstrap
+# preamble — see install.sh's note. Private per-pill dir, never $BINDIR.
+install -d -m 0755 "$SHAREDIR/lib"
+for f in "$SRC"/src/data/lib/*; do
+  install -m 0644 -o root -g root "$f" "$SHAREDIR/lib/$(basename "$f")"
+done
+rm -f "$BINDIR"/sutra*.py "$BINDIR"/sutra*.version "$BINDIR"/sutra*.commit
 
 # GNOME pill source, staged the same way as bpf sources below — never installed
 # into an account from here; run `coldspot-pill install` (as yourself) for that.

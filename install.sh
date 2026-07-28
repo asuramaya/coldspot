@@ -153,13 +153,25 @@ echo "-- binaries -> $BINDIR"
 for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
   install -m 0755 -o root -g root "$SRC/src/bin/$b" "$BINDIR/$b"
 done
-# coldspotd/coldspot both `import sutra` as a sibling — vendored, never hand-
-# edited (src/bin/sutra.version is the drift anchor, see `make check-sutra`).
-# Python puts an invoked script's own dir on sys.path[0], so it has to live
-# right next to them in $BINDIR, not under $SHAREDIR.
-install -m 0644 -o root -g root "$SRC/src/bin/sutra.py" "$BINDIR/sutra.py"
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
+
+# coldspotd/coldspot both `import sutra` as a sibling, found via the sutra
+# bootstrap preamble pasted at the top of each (see BOOTSTRAP.md in the sutra
+# repo) — a PRIVATE per-pill dir, never $BINDIR: two pills vendoring
+# identically-named sutra.py into the same shared bin dir make each other
+# uninstallable (ruling 3e44bd95). .version/.commit travel with the .py so
+# the installed copy stays checkable, not just the dev-tree one.
+echo "-- vendored sutra -> $SHAREDIR/lib"
+install -d -m 0755 "$SHAREDIR/lib"
+for f in "$SRC"/src/data/lib/*; do
+  install -m 0644 -o root -g root "$f" "$SHAREDIR/lib/$(basename "$f")"
+done
+# An older install left its vendored copies beside the binaries in $BINDIR —
+# nothing else ever cleans those up, and a stale, unanchored duplicate lying
+# around is exactly the blind spot that let /usr/bin and /usr/local/bin run
+# different canonical commits undetected in the first place.
+rm -f "$BINDIR"/sutra*.py "$BINDIR"/sutra*.version "$BINDIR"/sutra*.commit
 
 # 2. bpf core sources + build (clang + local BTF, no network)
 echo "-- bpf core sources -> $SHAREDIR/bpf"

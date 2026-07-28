@@ -40,12 +40,16 @@ socket) and a real daemon behind it, and the fuzzer exists specifically to keep 
 honest.
 
 If `check-sutra` reports lag, the shared `sutra` repo has moved ahead. Re-vendor rather than
-editing `src/bin/sutra.py` in place. It's vendored byte-identical on purpose, and hand edits are
-exactly what the integrity check exists to catch:
+editing `src/data/lib/sutra*.py` in place. They're vendored byte-identical on purpose, and hand
+edits are exactly what the integrity check exists to catch:
 
 ```bash
-bash ~/code/REPOS/sutra/vendor.sh src/bin src/extension/coldspot@asuramaya
+bash ~/code/REPOS/sutra/vendor.sh src/data/lib src/extension/coldspot@asuramaya --bootstrap=coldspot
 ```
+
+If the printed bootstrap preamble differs from what's already pasted into `src/bin/coldspot` and
+`src/bin/coldspotd`, paste the new one in verbatim (right before each `import sutra` line) —
+don't hand-adjust the old one, see `sutra`'s `BOOTSTRAP.md`.
 
 `make smoke` and `make attack` never touch a real network interface or your real installation.
 They run against a fake iface and a throwaway control socket, so they're safe on the machine

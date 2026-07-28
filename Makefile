@@ -22,7 +22,7 @@ help:
 	@echo "  make bpf           build the eBPF core from local kernel BTF"
 	@echo "  make smoke         run the no-root smoke test"
 	@echo "  make attack        fuzz the control socket adversarially (no root)"
-	@echo "  make check-sutra   verify the vendored src/bin/sutra.py wasn't hand-edited (+ freshness if canon is checked out)"
+	@echo "  make check-sutra   verify the vendored src/data/lib/sutra*.py wasn't hand-edited (+ freshness if canon is checked out)"
 	@echo "  make check-repo    verify the repo matches REPO-STANDARD.md's structural gate"
 	@echo "  make sync-signers  rebuild packaging/release-signing/allowed_signers from the canonical keys (see docs/RELEASE-SIGNING.md — do NOT run casually)"
 	@echo "  make clean         remove build artifacts"
@@ -63,7 +63,7 @@ lint:
 # failure phanspeed hit -- a shellcheck/py_compile list hand-duplicated into
 # ci.yml silently fell out of sync with the Makefile after Wave A).
 pycheck:
-	python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/bin/sutra.py
+	python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/data/lib/sutra.py
 
 check: lint check-sutra pycheck
 	bash -n install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-update src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh
@@ -73,44 +73,55 @@ check: lint check-sutra pycheck
 	bash tests/test_signing.sh
 	@echo "all static checks passed"
 
-# Drift guard for the vendored sutra copy. Integrity (hash matches what
+# Drift guard for the three vendored sutra modules (sutra, sutra_update,
+# sutra_xen — vendored unconditionally, whether or not coldspot imports each
+# one yet), now living in src/data/lib/ per the private-lib-dir move (ruling
+# 3e44bd95) rather than beside the binaries. Integrity (hash matches what
 # vendor.sh recorded, so the copy wasn't hand-edited) is a hard failure and
-# always runs. Freshness, when the canonical checkout is present (normally
-# isn't in CI), is three-way: compared against sutra.py's OWN last-modifying
-# commit in canonical, never canonical repo HEAD (decision 325b1969, sutra
-# 0.7.3: comparing against repo HEAD false-positives LAG on every commit
-# canonical ships, including ones that never touch sutra.py). Recorded at or
-# after that commit -> fresh. A strict ancestor of it -> LAG, a real vendor
-# gap, warn only. Not in canonical's history at all -> DRIFT, hard fail.
+# always runs, per module. Freshness, when the canonical checkout is present
+# (normally isn't in CI), is three-way: compared against each module's OWN
+# last-modifying commit in canonical, never canonical repo HEAD (decision
+# 325b1969, sutra 0.7.3: comparing against repo HEAD false-positives LAG on
+# every commit canonical ships, including ones that never touch that file).
+# Recorded at or after that commit -> fresh. A strict ancestor of it -> LAG,
+# a real vendor gap, warn only. Not in canonical's history at all -> DRIFT,
+# hard fail. This only proves the dev-tree copy; the INSTALLED copy under
+# $SHAREDIR/lib is a separate, not-yet-built check (Pass 4's check_health).
 check-sutra:
-	@ver=$$(cut -d' ' -f1 src/bin/sutra.version); \
-	sha=$$(awk '{print $$NF}' src/bin/sutra.version); \
-	actual=$$(sha256sum src/bin/sutra.py | cut -d' ' -f1); \
-	if [ "$$sha" != "$$actual" ]; then \
-	    echo "check-sutra FAIL: src/bin/sutra.py doesn't match src/bin/sutra.version" \
-	         "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh src/bin src/extension/coldspot@asuramaya)"; \
-	    exit 1; \
-	fi; \
-	echo "check-sutra: integrity ok (sutra $$ver, sha256 $$sha)"; \
-	canon="$$HOME/code/REPOS/sutra"; \
-	if [ -d "$$canon/.git" ]; then \
-	    if [ ! -f src/bin/sutra.commit ]; then \
-	        echo "check-sutra: freshness unknown (no src/bin/sutra.commit anchor, an older vendor)"; \
-	    else \
-	        recorded=$$(cat src/bin/sutra.commit); \
-	        filehead=$$(git -C "$$canon" log -1 --format=%H -- sutra.py); \
-	        if git -C "$$canon" merge-base --is-ancestor "$$filehead" "$$recorded" 2>/dev/null; then \
-	            echo "check-sutra: freshness ok (vendored from $$recorded, at or after sutra.py's own head $$filehead)"; \
-	        elif git -C "$$canon" merge-base --is-ancestor "$$recorded" "$$filehead" 2>/dev/null; then \
-	            echo "check-sutra: LAG (vendored from $$recorded, sutra.py has since moved to $$filehead) -- warn, not a failure"; \
+	@canon="$$HOME/code/REPOS/sutra"; \
+	fail=0; \
+	for mod in sutra sutra_update sutra_xen; do \
+	    py="src/data/lib/$$mod.py"; ver="src/data/lib/$$mod.version"; cmt="src/data/lib/$$mod.commit"; \
+	    v=$$(cut -d' ' -f1 "$$ver"); \
+	    sha=$$(awk '{print $$NF}' "$$ver"); \
+	    actual=$$(sha256sum "$$py" | cut -d' ' -f1); \
+	    if [ "$$sha" != "$$actual" ]; then \
+	        echo "check-sutra FAIL: $$py doesn't match $$ver" \
+	             "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh src/data/lib src/extension/coldspot@asuramaya --bootstrap=coldspot)"; \
+	        fail=1; continue; \
+	    fi; \
+	    echo "check-sutra: integrity ok ($$mod $$v, sha256 $$sha)"; \
+	    if [ -d "$$canon/.git" ]; then \
+	        if [ ! -f "$$cmt" ]; then \
+	            echo "check-sutra: freshness unknown for $$mod (no $$cmt anchor, an older vendor)"; \
 	        else \
-	            echo "check-sutra FAIL: DRIFT (vendored commit $$recorded is not in canonical's history at $$canon) -- re-vendor"; \
-	            exit 1; \
+	            recorded=$$(cat "$$cmt"); \
+	            filehead=$$(git -C "$$canon" log -1 --format=%H -- "$$mod.py"); \
+	            if git -C "$$canon" merge-base --is-ancestor "$$filehead" "$$recorded" 2>/dev/null; then \
+	                echo "check-sutra: freshness ok ($$mod vendored from $$recorded, at or after its own head $$filehead)"; \
+	            elif git -C "$$canon" merge-base --is-ancestor "$$recorded" "$$filehead" 2>/dev/null; then \
+	                echo "check-sutra: LAG ($$mod vendored from $$recorded, canonical has since moved to $$filehead) -- warn, not a failure"; \
+	            else \
+	                echo "check-sutra FAIL: DRIFT ($$mod's vendored commit $$recorded is not in canonical's history at $$canon) -- re-vendor"; \
+	                fail=1; \
+	            fi; \
 	        fi; \
 	    fi; \
-	else \
+	done; \
+	if [ ! -d "$$canon/.git" ]; then \
 	    echo "check-sutra: canonical sutra checkout not present, freshness skipped"; \
-	fi
+	fi; \
+	exit $$fail
 
 bpf:
 	cd src/bpf && bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h

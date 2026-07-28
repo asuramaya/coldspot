@@ -11,10 +11,13 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# coldspotd does `import sutra` as a sibling (vendored into src/bin/, same as
-# a real invocation would see it on sys.path[0]) — SourceFileLoader doesn't
-# add that automatically, so it's added explicitly before exec_module below.
-sys.path.insert(0, os.path.join(HERE, "src", "bin"))
+# coldspotd's own sutra bootstrap preamble (see BOOTSTRAP.md) locates the lib
+# dir relative to its INSTALLED path (dirname(dirname(realpath(__file__)))/
+# share/coldspot/lib), which doesn't exist in a dev checkout -- SourceFileLoader
+# runs that preamble same as any other import, so it inserts a nonexistent path
+# at sys.path[0] harmlessly. Insert the real dev-tree location explicitly so
+# `import sutra` still resolves, same as a real install finds it on sys.path.
+sys.path.insert(0, os.path.join(HERE, "src", "data", "lib"))
 _loader = importlib.machinery.SourceFileLoader(
     "coldspotd", os.path.join(HERE, "src", "bin", "coldspotd"))
 _spec = importlib.util.spec_from_loader("coldspotd", _loader)

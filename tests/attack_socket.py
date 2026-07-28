@@ -76,13 +76,21 @@ def weak(msg):
 
 
 # --------------------------------------------------------------- sandbox boot
+# bin_dir/lib_dir mimic an install prefix (bin/ + share/coldspot/lib/) so the
+# daemon's sutra bootstrap preamble -- which locates the lib dir relative to
+# its own installed path -- resolves for real, same as tests/smoke.sh. run_dir
+# itself stays just the runtime state target (sed-rewritten /run, /var/lib).
 run_dir = tempfile.mkdtemp(prefix="coldspot-attack-")
+bin_dir = os.path.join(run_dir, "bin")
+lib_dir = os.path.join(run_dir, "share", "coldspot", "lib")
+os.makedirs(bin_dir)
+os.makedirs(lib_dir)
 _src = open(os.path.join(HERE, "src", "bin", "coldspotd")).read()
 _src = _src.replace("/run/coldspot", run_dir).replace("/var/lib/coldspot", run_dir)
-_daemon = os.path.join(run_dir, "coldspotd")
+_daemon = os.path.join(bin_dir, "coldspotd")
 with open(_daemon, "w") as f:
     f.write(_src)
-shutil.copy(os.path.join(HERE, "src", "bin", "sutra.py"), os.path.join(run_dir, "sutra.py"))
+shutil.copy(os.path.join(HERE, "src", "data", "lib", "sutra.py"), os.path.join(lib_dir, "sutra.py"))
 
 SOCK = os.path.join(run_dir, "control.sock")
 STATUS = os.path.join(run_dir, "status.json")
