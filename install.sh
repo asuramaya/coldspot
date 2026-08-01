@@ -244,6 +244,11 @@ fi
 echo "-- GNOME pill source -> $SHAREDIR/extension/$EXT_UUID"
 install -Dm644 "$SRC/src/extension/$EXT_UUID/metadata.json" "$SHAREDIR/extension/$EXT_UUID/metadata.json"
 install -Dm644 "$SRC/src/extension/$EXT_UUID/extension.js"  "$SHAREDIR/extension/$EXT_UUID/extension.js"
+# extension.js imports pill.js as a sibling (Pass 4: PALETTE/CHIP/CHIP_ON/
+# dataRow collapsed to the vendored commons) -- without this line the staged
+# extension source is missing a file it needs at runtime, and coldspot-pill
+# install would ship a pill that fails to load.
+install -Dm644 "$SRC/src/extension/$EXT_UUID/pill.js"       "$SHAREDIR/extension/$EXT_UUID/pill.js"
 
 # 7. verify perms
 echo "-- verifying"

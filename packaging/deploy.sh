@@ -63,6 +63,9 @@ install -Dm644 "$SRC/src/extension/coldspot@asuramaya/metadata.json" \
   "$SHAREDIR/extension/coldspot@asuramaya/metadata.json"
 install -Dm644 "$SRC/src/extension/coldspot@asuramaya/extension.js" \
   "$SHAREDIR/extension/coldspot@asuramaya/extension.js"
+# extension.js imports pill.js as a sibling -- see install.sh's note.
+install -Dm644 "$SRC/src/extension/coldspot@asuramaya/pill.js" \
+  "$SHAREDIR/extension/coldspot@asuramaya/pill.js"
 
 # 3. BPF sources + rebuild the object into the installed share (local BTF only).
 echo "== bpf core -> $SHAREDIR/bpf =="

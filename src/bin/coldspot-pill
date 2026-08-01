@@ -41,6 +41,9 @@ case "${1:-install}" in
     mkdir -p "$EXT_DIR"
     install -m 0644 "$SRC_EXT/metadata.json" "$EXT_DIR/metadata.json"
     install -m 0644 "$SRC_EXT/extension.js"  "$EXT_DIR/extension.js"
+    # extension.js imports pill.js as a sibling (Pass 4: PALETTE/CHIP/CHIP_ON/
+    # dataRow collapsed to the vendored commons) -- must travel with it.
+    install -m 0644 "$SRC_EXT/pill.js"       "$EXT_DIR/pill.js"
     gnome-extensions enable "$EXT_UUID" 2>/dev/null || true
     # `gnome-extensions enable` no-ops if the running shell hasn't scanned a
     # freshly installed extension, so also write the enabled-extensions list

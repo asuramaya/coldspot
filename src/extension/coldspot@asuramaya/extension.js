@@ -15,6 +15,16 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {QuickMenuToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
+import * as Pill from './pill.js';
+
+// PALETTE/CHIP/CHIP_ON/dataRow used to be local duplicates of exactly this
+// shape (dataRow is coldspot's own row layout, promoted into the family
+// commons — see pill.js). Collapsed to the vendored copy now that both
+// exist side by side (REPO-STANDARD.md Pass 4); everything else here stays
+// local by design — pill.js's UpdateSurface/StatusWatcher/sendCmd are a
+// bigger behavioral change this pass deliberately doesn't take.
+const {PALETTE, CHIP, CHIP_ON, dataRow} = Pill;
+
 const STATUS = '/run/coldspot/status.json';
 const COLDSPOT = 'coldspot';
 // glyph per stance; cold is the metered default (snowflake)
@@ -23,18 +33,7 @@ const STANCES = [['open', '○'], ['lean', '◐'], ['cold', '❄'], ['siege', '�
 // its own — a network can be scarce (cold) or bad (stabilize), or neither)
 const POLICIES = [['open', '○'], ['cold', '❄'], ['stabilize', '≈']];
 const LIMITS = [['1mbps', '1 Mbit/s'], ['500kbps', '500 kbit/s'], ['off', 'no cap']];
-
-// shared family palette (FAMILY.md doctrine #12) — same five colors as every
-// other pill in the kast/phanspeed/coldspot/ByeByte/RAMstein family.
-const PALETTE = { ACCENT: '#b9acff', DIM: '#9aa0a6', GOOD: '#4caf50',
-                   WARN: '#ffbb33', BAD: '#ff5b5b' };
 const VERSION_FILE = '/usr/local/share/coldspot/VERSION';
-
-// chip styling for the stance row (kast/phanspeed idiom)
-const CHIP = 'border-radius:13px; padding:6px 10px; margin:0 2px; color:#dedde6;'
-    + ' background-color:rgba(255,255,255,0.07);';
-const CHIP_ON = 'border-radius:13px; padding:6px 10px; margin:0 2px; color:#ffffff;'
-    + ' font-weight:bold; background-color:#5b50a8;';
 
 function humanRate(bps) {
     let b = bps || 0;
@@ -60,23 +59,6 @@ function humanMb(mb) {
 }
 
 const updown = (txMb, rxMb) => `↑${humanMb(txMb)} ↓${humanMb(rxMb)}`;
-
-// name-first, data-flush-right row. A plain interpolated string (the prior
-// shape here) put the variable-width number BEFORE the name, so the name's
-// start position raggedly shifted row to row; expanding the name label
-// instead pins it flush left and pushes data flush right regardless of its
-// width. Shared by the three variable-length lists in this menu: talkers,
-// ledger, history.
-function dataRow(name, dataText, onActivate) {
-    const row = new PopupMenu.PopupBaseMenuItem({ reactive: !!onActivate, can_focus: !!onActivate });
-    row.add_child(new St.Label({ text: name, x_expand: true }));
-    row.add_child(new St.Label({
-        text: dataText,
-        style: `color:${PALETTE.DIM}; font-size:0.9em; padding-left:10px;`,
-    }));
-    if (onActivate) row.connect('activate', onActivate);
-    return row;
-}
 
 // the layer-1/2 axis in the pill: a 4-bar signal glyph by health score
 const SIG_BARS = { good: '▂▄▆█', ok: '▂▄▆_', weak: '▂▄__',
