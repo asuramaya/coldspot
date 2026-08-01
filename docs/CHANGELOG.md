@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.6.0 — REPO-STANDARD compliance, sutra 0.12.1, and a .deb port
+coldspot's first release since February — 21 commits, none of it a behavior
+change to the meter or the enforcer. The whole span is the family's
+REPO-STANDARD rollout landing here (kast reached it first; this is the
+proof it replicates), plus adopting the recipe layer sutra grew in
+response, plus the artifact-shape gap that rollout's own survey found
+(ruling 0d38a1f9: coldspot was the one pill in the family with no `.deb`
+at all).
+
+- **Sutra 0.8.0's private install-path move, adopted.** Vendored
+  `sutra.py`/`sutra_update.py`/`sutra_xen.py` move from beside the binaries
+  to a private `src/share/coldspot/lib/` (installed: `$PREFIX/share/coldspot/lib/`)
+  — two pills vendoring identically-named files into the same shared bin
+  dir made each other uninstallable (ruling `3e44bd95`). Every binary that
+  imports sutra carries the canonical bootstrap preamble. Caught and fixed
+  same-day: the checkout's own analog of `$PREFIX` is `src/`, not the repo
+  root — the first vendor landed one directory too shallow and broke
+  `python3 src/bin/coldspot` run straight from a checkout; `tests/smoke.sh`
+  now runs a binary from the checkout as its first check specifically to
+  catch this class again.
+- **REPO-STANDARD Passes 1–3**: docs restructured (`README.md` split along
+  where the second reader begins, `docs/ARCHITECTURE.md`/`USAGE.md`/
+  `RELEASING.md` born), CI truth (release notes from `docs/CHANGELOG.md`
+  via `--notes-file`, never `--generate-notes`; `check-sutra`'s freshness
+  half compares each vendored file's own last-modifying commit, never
+  canonical repo HEAD), and the tree itself: 21 root-level rows down to 12
+  (`bin/` → `src/bin/`, `bpf/` → `src/bpf/`, `config/` → `src/data/config/`,
+  systemd units and man pages into `src/data/`).
+- **Pass 4, the spine adoption**: `coldspot-update` rewritten as a thin
+  wrapper over the shared `sutra_update.main()` (one grammar, one trust
+  chain, one install-path detection, instead of a hand-rolled copy);
+  `extension.js` collapses its local `PALETTE`/`CHIP`/`CHIP_ON`/`dataRow`
+  duplicates into an import from the vendored `pill.js` commons; new
+  `coldspot-healthcheck`, a thin wrapper over `sutra.check_health` that also
+  verifies the *installed* copies of the vendored modules against their own
+  installed anchors (`check-sutra` only ever proved the dev-tree copy).
+  Found and fixed along the way: `install.sh` never wrote a persistent
+  `allowed_signers` anchor anywhere, so an installed `coldspot-update` could
+  never find its own signing key at all, armed or not; and `pill.js` had
+  been vendored since 0.3.0 but never actually shipped by `install.sh`/
+  `packaging/deploy.sh`/`coldspot-pill` — harmless while unused, would have
+  broken the pill the moment `extension.js` started importing it.
+- **Sutra re-vendored 0.8.0 → 0.12.1, and `sutra.mk`/`pill-ci.yml` adopted.**
+  Measured before touching anything: the four vendored files
+  (`sutra.py`/`sutra_update.py`/`sutra_xen.py`/`pill.js`) were already
+  byte-identical to canonical HEAD — every sutra release since 0.7.0 was
+  recipe-layer and docs, never a change to the code these binaries actually
+  import, so the re-vendor was a version/commit anchor bump only. Adopting
+  `sutra.mk` (the family's shared Makefile recipe layer, replacing ~90
+  hand-maintained lines of `check-sutra`/row-count logic) closed a real gap
+  found in the process: coldspot was the only pill in the family whose
+  vendored `pill.js` was never integrity/freshness-checked at all. `ci.yml`
+  now calls `asuramaya/sutra/.github/workflows/pill-ci.yml` as a shared
+  reusable job instead of hand-copying the same checks byebyte/RAMstein/
+  phanspeed each maintain their own drifting copy of.
+- **A `.deb` port** (ruling `0d38a1f9`, revoking coldspot's earlier
+  deferral) — `make deb`/`packaging/build-deb.sh`, no debhelper, mirroring
+  phanspeed's reference shape. Verified against the family's actual
+  acceptance bar, not just "the deb builds": installed byebyte + RAMstein +
+  coldspot together in one container from their three independently-built
+  `.deb`s — zero shared file paths, no install collision, each binary
+  resolves its own vendored `sutra.py`, none of the others'. `apt-get
+  remove --purge` fully cleans up (found and fixed a real gap first: dpkg
+  leaves behind whatever a package's own postinst/runtime writes into a
+  package-owned directory that was never part of the shipped payload — a
+  bpf build artifact and a stray Python `__pycache__`, in this case).
+
 ## 0.5.0 — sutra backbone, SSH-signed releases, a real QuickSettings pill
 Four pieces of family-wide doctrine landing together, all behavior-preserving
 or additive — nothing here should change what coldspot already did for you.
