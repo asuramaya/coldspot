@@ -66,3 +66,6 @@ jobs:
 
       - name: Release-signing verify path
         run: python3 tests/test_signing.py
+
+      - name: Build .deb
+        run: make check-deb

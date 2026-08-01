@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -e
+
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    systemctl disable --now coldspotd.service coldspot-update.timer coldspot-update.service 2>/dev/null || true
+    # detach the bpf core + drop the siege table before the binaries that
+    # manage them are gone -- same order as uninstall.sh
+    /usr/bin/coldspot-bpf unload 2>/dev/null || true
+    nft delete table inet coldspot 2>/dev/null || true
+fi
+
+exit 0

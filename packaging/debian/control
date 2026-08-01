@@ -1,0 +1,16 @@
+Package: coldspot
+Version: @VERSION@
+Architecture: all
+Maintainer: asuramaya <asuramaya@users.noreply.github.com>
+Depends: python3 (>= 3.8), systemd, openssh-client, nftables
+Recommends: clang, bpftool, linux-tools-common, network-manager
+Section: net
+Priority: optional
+Homepage: https://github.com/asuramaya/coldspot
+Description: metered-link data saver — per-app truth, hard caps, GNOME pill
+ coldspot governs a metered or unreliable link: an eBPF-backed daemon meters
+ every app's bytes, a CAKE-shaped cap protects the budget while priority
+ protects the task you're actively running, and a GNOME Quick Settings pill
+ shows live per-app rates with tap-to-cap/uncap/block. Link-health sensing
+ (signal, PHY rate, loss) drives auto-stabilize and health-gated multi-radio
+ steering/bonding. Pure Python standard library core; no pip dependencies.

@@ -17,7 +17,8 @@ src/share/coldspot/lib/   vendored sutra*.py (private per-pill dir; a checkout's
 src/data/systemd/system/  coldspotd.service, coldspot-update.timer/.service
 src/data/man/     coldspot.1, coldspotd.8
 src/extension/    the GNOME Shell pill (coldspot@asuramaya)
-packaging/        deploy.sh, sync-signers.sh, packages.txt, VERSION (the one version constant)
+packaging/        deploy.sh, build-deb.sh, sync-signers.sh, packages.txt, VERSION (the one version constant)
+packaging/debian/  control, postinst, prerm, postrm, conffiles (the .deb maintainer scripts)
 packaging/release-signing/  allowed_signers (the SSH-signature trust anchor)
 tests/            smoke.sh, attack_socket.py, test_units.py, test_signing.py
 docs/             this file, USAGE.md, RELEASING.md, RELEASE-SIGNING.md, CHANGELOG.md
@@ -204,4 +205,3 @@ choice.
 | daemon runs fully as root, not capability-dropped | the v1 BPF core and its loader need `CAP_BPF`/`CAP_NET_ADMIN`, and coldspot hasn't yet split a capability-scoped worker off the daemon. Tracked as future work, not a rejected idea; see the commented `AmbientCapabilities` line in `src/data/systemd/system/coldspotd.service` |
 | `src/share/coldspot/lib/sutra_xen.py` is vendored but unused | no coldspot integration point yet -- `coldspot-update` adopted `sutra_update.py` (Pass 4), `sutra_xen.py` is Xen guest-surface specific and coldspot has no guest-surface concern |
 | `extension.js` keeps `pill.js`'s `UpdateSurface`/`StatusWatcher`/`sendCmd`/menu-row helpers unadopted, using its own status-read + subprocess-CLI + polling shape instead | `PALETTE`/`CHIP`/`CHIP_ON`/`dataRow` collapsed to the vendored copy (Pass 4); adopting the rest is a real behavioral change (event-driven status watching, socket commands instead of CLI subprocess calls, an update-row UI addition) deliberately out of scope for a same-behavior dedup pass |
-| no `.deb` yet | owed under a standing ruling, sized as its own milestone; a new artifact type needs its own verification and shouldn't ride a doc/CI/tree pass |

@@ -44,7 +44,7 @@ SUTRA_CHECK_BINS := src/bin/coldspot src/bin/coldspotd src/bin/coldspot-healthch
 # call against the live daemon; sutra.mk's SUTRA_CHECK_ARGS has no default
 # for exactly this reason).
 
-.PHONY: help install pill deploy uninstall check lint lint-ruff lint-shell pycheck bpf smoke attack sync-signers check-repo clean
+.PHONY: help install pill deploy uninstall check lint lint-ruff lint-shell pycheck bpf smoke attack sync-signers check-repo deb check-deb clean
 
 help:
 	@echo "coldspot targets:"
@@ -60,6 +60,7 @@ help:
 	@echo "  make check-sutra   verify the vendored src/share/coldspot/lib/sutra*.py wasn't hand-edited (+ freshness if canon is checked out)"
 	@echo "  make check-repo    verify the repo matches REPO-STANDARD.md's structural gate"
 	@echo "  make sync-signers  rebuild packaging/release-signing/allowed_signers from the canonical keys (see docs/RELEASE-SIGNING.md — do NOT run casually)"
+	@echo "  make deb           build dist/coldspot_<version>_all.deb + SHA256SUMS (no debhelper, no install)"
 	@echo "  make clean         remove build artifacts"
 
 # install.sh is root-only and never self-elevates (see its header comment for
@@ -196,6 +197,17 @@ check-repo:
 	    if [ -n "$$bad" ]; then echo "check-repo FAIL: exemptions table has a row missing a column"; fail=1; fi; \
 	fi; \
 	if [ "$$fail" -eq 0 ]; then echo "check-repo: all mechanical checks passed"; else exit 1; fi
+
+# Builds (never installs) a .deb with dpkg-deb -- no debhelper, same shape
+# as phanspeed's build-deb.sh (operator ruling 0d38a1f9's reference). The
+# eBPF core ships as source only; postinst builds it on the target machine,
+# same conditional as install.sh, since a prebuilt object is specific to
+# the kernel BTF it was compiled against.
+deb:
+	bash packaging/build-deb.sh
+
+check-deb: deb
+	dpkg-deb --info dist/coldspot_"$$(tr -d '[:space:]' < packaging/VERSION)"_all.deb >/dev/null
 
 clean:
 	rm -rf src/bpf/vmlinux.h src/bpf/*.o dist __pycache__ src/bin/__pycache__

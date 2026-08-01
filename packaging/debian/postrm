@@ -1,0 +1,22 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -e
+
+systemctl daemon-reload 2>/dev/null || true
+if [ "$1" = purge ]; then
+    rm -rf /etc/coldspot.conf /var/lib/coldspot /run/coldspot
+    # dpkg only removes what it shipped, so it leaves /usr/share/coldspot/lib
+    # and /usr/share/coldspot/bpf behind with a "not empty" warning: postinst's
+    # bpf build writes vmlinux.h there, and simply running any Python binary
+    # against the vendored lib dir writes a __pycache__ .pyc -- neither is
+    # package-owned. rm -rf the whole tree explicitly, matching uninstall.sh's
+    # own unconditional "rm -rf $SHAREDIR" on --purge (measured: reproduced
+    # both leftovers in a container before adding this).
+    rm -rf /usr/share/coldspot
+    # drop the privilege-gating group only on purge -- a plain remove keeps
+    # it so a reinstall doesn't strip the user's membership (which needs a
+    # re-login either way); mirrors uninstall.sh's own --purge behavior.
+    groupdel coldspot 2>/dev/null || true
+fi
+
+exit 0

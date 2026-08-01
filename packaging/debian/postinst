@@ -1,0 +1,67 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -e
+
+if [ "$1" = configure ]; then
+    systemctl daemon-reload || true
+
+    # migrate off a previous install.sh deployment (units in /etc, bins +
+    # vendored lib in /usr/local) so the packaged copies under /usr are the
+    # ones that actually run -- same shape as phanspeed's postinst, extended
+    # for coldspot's private lib dir and larger binary set.
+    if [ -f /etc/systemd/system/coldspotd.service ]; then
+        systemctl disable --now coldspotd.service 2>/dev/null || true
+        rm -f /etc/systemd/system/coldspotd.service \
+              /etc/systemd/system/coldspot-update.service \
+              /etc/systemd/system/coldspot-update.timer
+        rm -f /usr/local/bin/coldspot /usr/local/bin/coldspotd \
+              /usr/local/bin/coldspot-stance /usr/local/bin/coldspot-bpf \
+              /usr/local/bin/coldspot-update /usr/local/bin/coldspot-pill \
+              /usr/local/bin/coldspot-healthcheck
+        rm -rf /usr/local/share/coldspot
+        systemctl daemon-reload || true
+    fi
+
+    # v1 eBPF core: source ships in the package (kernel-BTF-specific, can't be
+    # prebuilt portably), built here against THIS machine's kernel if the
+    # toolchain is present -- same conditional as install.sh; absent, v0
+    # (systemd/proc) metering still works, so this is never fatal.
+    if command -v clang >/dev/null 2>&1 && command -v bpftool >/dev/null 2>&1; then
+        env COLDSPOT_BPF_DIR=/usr/share/coldspot/bpf /usr/bin/coldspot-bpf build \
+            || echo "coldspot: bpf core build failed; v0 metering still works" >&2
+    fi
+
+    # privilege model: no sudo. The CLI reaches coldspotd over its control
+    # socket, gated by membership in the coldspot system group (root:coldspot
+    # 0660, checked via SO_PEERCRED) -- unlike the family's uid-gated pills,
+    # so this step has no sibling deb to copy from. $SUDO_USER is reliable
+    # here the same way install.sh relies on it: `sudo apt install`/`sudo
+    # dpkg -i` are the only realistic ways this postinst runs as root with a
+    # human behind it.
+    rm -f /etc/sudoers.d/coldspot
+    getent group coldspot >/dev/null || groupadd -r coldspot
+    if [ -n "${SUDO_USER:-}" ]; then
+        usermod -aG coldspot "$SUDO_USER" || true
+    else
+        echo "coldspot: couldn't tell which account to add to the 'coldspot' group" >&2
+        echo "  (no \$SUDO_USER -- installed outside sudo?). Add yourself manually:" >&2
+        echo "    sudo usermod -aG coldspot <your-username>" >&2
+    fi
+
+    systemctl enable --now coldspotd.service || true
+    # on upgrade, --now won't reload an already-running unit, so new code
+    # would sit inert until reboot -- restart it so the update actually takes
+    if systemctl is-active --quiet coldspotd.service 2>/dev/null; then
+        systemctl try-restart coldspotd.service || true
+    fi
+    # coldspot-update.timer ships installed but deliberately NOT enabled --
+    # the daily auto-updater runs code as root unattended, so it stays
+    # opt-in (see /etc/coldspot.conf's auto_update key and the timer unit's
+    # own header comment). Never enable it here.
+
+    echo "coldspot installed. Log out/in (or 'newgrp coldspot') for your new"
+    echo "group membership to take effect, then: coldspot status"
+    echo "GNOME pill (per-account, no sudo): coldspot-pill install"
+fi
+
+exit 0
