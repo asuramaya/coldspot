@@ -66,6 +66,17 @@ at all).
   leaves behind whatever a package's own postinst/runtime writes into a
   package-owned directory that was never part of the shipped payload — a
   bpf build artifact and a stray Python `__pycache__`, in this case).
+- **Release artifact shape unified with the rest of the family**: this
+  release publishes `coldspot.tar.gz` + the `.deb` + one signed
+  `SHA256SUMS` manifest covering both, matching ByeByte/RAMstein/kast/
+  phanspeed instead of coldspot's own single-purpose
+  `coldspot.tar.gz.sha256`. That older file is still published alongside,
+  unchanged, **through this release only** — a checkout's `install.sh`
+  older than 0.6.0 keeps resolving against it; 0.6.0's `install.sh` prefers
+  `SHA256SUMS` and falls back to the legacy name only if `SHA256SUMS`
+  itself can't be fetched. **0.7.0 drops the legacy file.** The operator's
+  signature target moves accordingly: `SHA256SUMS`, not
+  `coldspot.tar.gz.sha256` — see `docs/RELEASING.md`.
 
 ## 0.5.0 — sutra backbone, SSH-signed releases, a real QuickSettings pill
 Four pieces of family-wide doctrine landing together, all behavior-preserving

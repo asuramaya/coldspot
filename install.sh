@@ -65,25 +65,37 @@ fi
 # from it. Runs as root (we already checked above), same as everything else.
 verify_release_tarball() {
   local tarball="$1" base="https://github.com/${REPO}/releases/latest/download" \
-        tmp sums want got
+        tmp sums_name sums want got
   command -v sha256sum >/dev/null 2>&1 || {
     echo "sha256sum not found; cannot verify the download. Install coreutils." >&2; exit 1; }
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
-  sums="$tmp/coldspot.tar.gz.sha256"
-  curl -fsSL "${base}/coldspot.tar.gz.sha256" -o "$sums" \
-    || { echo "could not fetch release checksum; refusing unverified download." >&2; exit 1; }
+  # SHA256SUMS is the family's unified manifest (ruling 0d38a1f9) as of
+  # coldspot 0.6.0 -- covers the tarball AND the .deb under one signature.
+  # Falls back to the pre-0.6.0 single-purpose file so this exact install.sh
+  # keeps working against an OLDER release too, without a second migration.
+  # Both are the same "<hash>  <filename>" format; only the name and row
+  # count differ, so the parse below is unchanged either way.
+  sums_name="SHA256SUMS"
+  sums="$tmp/$sums_name"
+  if ! curl -fsSL "${base}/${sums_name}" -o "$sums"; then
+    sums_name="coldspot.tar.gz.sha256"
+    sums="$tmp/$sums_name"
+    curl -fsSL "${base}/${sums_name}" -o "$sums" \
+      || { echo "could not fetch release checksum; refusing unverified download." >&2; exit 1; }
+  fi
   want="$(awk '$2 == "coldspot.tar.gz" { print $1; exit }' "$sums")"
   [[ -n "$want" ]] || { echo "release checksum file has no entry for coldspot.tar.gz; aborting." >&2; exit 1; }
   got="$(sha256sum "$tarball" | awk '{print $1}')"
   [[ "$want" == "$got" ]] || { echo "checksum mismatch on coldspot.tar.gz; aborting." >&2; exit 1; }
-  echo "verified release checksum."
+  echo "verified release checksum (${sums_name})."
 
-  # Signature over that checksum manifest (the exact bytes fetched above),
-  # against the embedded trust anchor (docs/RELEASE-SIGNING.md). Ships empty
-  # until a key is provisioned — this is a one-time human-typed bootstrap, not
-  # the unattended auto-updater (coldspot-update, which refuses outright with
-  # no key), so it degrades to the checksum-only check above with a warning
-  # rather than blocking install.
+  # Signature over that checksum manifest (the exact bytes fetched above,
+  # under whichever name was actually fetched), against the embedded trust
+  # anchor (docs/RELEASE-SIGNING.md). Ships empty until a key is provisioned
+  # — this is a one-time human-typed bootstrap, not the unattended
+  # auto-updater (coldspot-update, which refuses outright with no key), so
+  # it degrades to the checksum-only check above with a warning rather than
+  # blocking install.
   if [[ -z "$RELEASE_ALLOWED_SIGNERS" ]]; then
     echo "warning: no release-signing key provisioned yet — proceeding on sha256" >&2
     echo "         alone. See docs/RELEASE-SIGNING.md." >&2
@@ -92,8 +104,8 @@ verify_release_tarball() {
   command -v ssh-keygen >/dev/null 2>&1 || {
     echo "ssh-keygen not found; cannot verify the release signature. Aborting." >&2; exit 1; }
   local sig signers
-  sig="$tmp/coldspot.tar.gz.sha256.sig"
-  curl -fsSL "${base}/coldspot.tar.gz.sha256.sig" -o "$sig" \
+  sig="$tmp/${sums_name}.sig"
+  curl -fsSL "${base}/${sums_name}.sig" -o "$sig" \
     || { echo "could not fetch release signature; refusing unsigned install." >&2; exit 1; }
   signers="$tmp/allowed_signers"
   # No added newline: RELEASE_ALLOWED_SIGNERS is embedded byte-for-byte from

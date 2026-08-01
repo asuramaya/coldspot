@@ -32,7 +32,11 @@ Re-vendor before releasing rather than after.
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-CI then builds `coldspot.tar.gz` and `coldspot.tar.gz.sha256`, and publishes them unsigned. It
+CI then builds `coldspot.tar.gz` and `coldspot_X.Y.Z_all.deb`, folds both into one `SHA256SUMS`
+manifest (the family's unified artifact shape, ruling `0d38a1f9`, matching ByeByte/RAMstein/
+kast/phanspeed), and publishes everything unsigned — plus, through 0.6.0 only, the older
+single-purpose `coldspot.tar.gz.sha256` alongside it, so an `install.sh` checkout that predates
+the `SHA256SUMS` fallback (added at 0.6.0) still resolves. Drop the legacy file at 0.7.0. CI
 signs nothing, and that's deliberate: if CI could sign, then anyone who compromised the workflow
 or the account could sign whatever they pushed, and the anchor would be protecting nothing.
 
@@ -42,12 +46,13 @@ to. Don't tag unless the operator is available to sign shortly after.
 
 ## 3. The operator seals it
 
-The operator verifies the published bytes, signs the checksum manifest offline with the FIDO2
-key, and uploads the detached signature:
+The operator verifies the published bytes, signs `SHA256SUMS` — the primary manifest as of
+0.6.0, covering every artifact it lists — offline with the FIDO2 key, and uploads the detached
+signature:
 
 ```bash
-ssh-keygen -Y sign -f /path/to/id_ra_master_N.pub -n coldspot-release coldspot.tar.gz.sha256
-gh release upload vX.Y.Z coldspot.tar.gz.sha256.sig
+ssh-keygen -Y sign -f /path/to/id_ra_master_N.pub -n coldspot-release SHA256SUMS
+gh release upload vX.Y.Z SHA256SUMS.sig
 ```
 
 This runs through the family's seal desk in practice, which derives its queue from published
