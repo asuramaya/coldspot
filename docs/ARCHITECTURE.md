@@ -19,7 +19,7 @@ src/data/man/     coldspot.1, coldspotd.8
 src/extension/    the GNOME Shell pill (coldspot@asuramaya)
 packaging/        deploy.sh, sync-signers.sh, packages.txt, VERSION (the one version constant)
 packaging/release-signing/  allowed_signers (the SSH-signature trust anchor)
-tests/            smoke.sh, attack_socket.py, test_units.py, test_signing.sh
+tests/            smoke.sh, attack_socket.py, test_units.py, test_signing.py
 docs/             this file, USAGE.md, RELEASING.md, RELEASE-SIGNING.md, CHANGELOG.md
 ```
 
@@ -188,7 +188,7 @@ choice.
 | Item | Why |
 |---|---|
 | daemon runs fully as root, not capability-dropped | the v1 BPF core and its loader need `CAP_BPF`/`CAP_NET_ADMIN`, and coldspot hasn't yet split a capability-scoped worker off the daemon. Tracked as future work, not a rejected idea; see the commented `AmbientCapabilities` line in `src/data/systemd/system/coldspotd.service` |
-| `src/share/coldspot/lib/sutra_update.py` and `src/share/coldspot/lib/sutra_xen.py` are vendored but unused | `coldspot-update` is still a hand-rolled bash script with its own SSH-signature verification, not yet a thin wrapper over `sutra_update.main()`. That's a real behavior-changing rewrite of the signature-verification path, deliberately sequenced on its own rather than riding this pass. `sutra_xen.py` has no coldspot integration point yet |
+| `src/share/coldspot/lib/sutra_xen.py` is vendored but unused | no coldspot integration point yet -- `coldspot-update` adopted `sutra_update.py` (Pass 4), `sutra_xen.py` is Xen guest-surface specific and coldspot has no guest-surface concern |
 | `check-sutra` only proves the dev-tree copy under `src/share/coldspot/lib/`, not the installed copy under `$SHAREDIR/lib` | the same sha256/anchor logic applies unchanged once pointed at the installed path; wiring it in is Pass 4's `check_health` item, so the installed copy stays checkable rather than just assumed |
 | `extension.js` keeps local `PALETTE`/`CHIP`/`CHIP_ON`/`dataRow` instead of importing `pill.js` | both now exist side by side after the latest sutra re-vendor; collapsing the duplicate is a safe, separately-tracked cleanup (the vendored `dataRow` is coldspot's own row layout, promoted into the family commons) |
 | no `.deb` yet | owed under a standing ruling, sized as its own milestone; a new artifact type needs its own verification and shouldn't ride a doc/CI/tree pass |

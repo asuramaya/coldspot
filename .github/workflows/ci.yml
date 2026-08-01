@@ -50,7 +50,7 @@ jobs:
         run: python3 tests/test_units.py
 
       - name: Release-signing verify path
-        run: bash tests/test_signing.sh
+        run: python3 tests/test_signing.py
 
       - name: Daemon smoke test
         run: bash tests/smoke.sh

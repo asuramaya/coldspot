@@ -155,6 +155,12 @@ for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspo
 done
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
+# coldspot-update's installed-anchor candidate (its checkout-relative
+# fallback only ever helps a dev checkout, not a real install) -- without
+# this, an installed coldspot-update could never find the signing anchor at
+# all, armed or not (caught while adopting it onto the shared sutra_update
+# spine; ByeByte and RAMstein already had this line, coldspot never did).
+install -m 0644 "$SRC/packaging/release-signing/allowed_signers" "$SHAREDIR/allowed_signers"
 
 # coldspotd/coldspot both `import sutra` as a sibling, found via the sutra
 # bootstrap preamble pasted at the top of each (see BOOTSTRAP.md in the sutra

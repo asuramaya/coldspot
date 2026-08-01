@@ -1,225 +1,121 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 asuramaya and coldspot contributors
-# coldspot-update — check GitHub for newer releases and install them in place.
-#
-# coldspot is a source/tarball install (binaries in /usr/local/bin), so updating
-# means fetching the published release tarball and re-running the installer FROM
-# that verified tarball. We deliberately do NOT pipe a network script to root
-# bash: the trust root is an SSH signature (ssh-keygen -Y sign/-Y verify) over
-# the release's checksum manifest, verified against release-signing/allowed_signers
-# — the fleet's shared FIDO2 master identity (docs/RELEASE-SIGNING.md), pinned
-# hardware-only so a compromised CI/build machine can't forge a release without
-# the physical key. A co-located sha256 only detects corruption, not a repo/
-# account compromise (whoever can publish a release can publish a matching hash
-# too), so the signature is mandatory and the updater FAILS CLOSED — no
-# signature, no key, or no ssh-keygen means no install.
-#
-# Auto-update is OPT-IN. The systemd timer runs `coldspot-update --auto`, which
-# no-ops unless auto_update is turned on in /etc/coldspot.conf. A manual run
-# (`coldspot update`) is explicit user action and proceeds regardless.
-#
-#   coldspot-update            install if a newer release exists (manual)
-#   coldspot-update --auto     timer path; obeys auto_update= in coldspot.conf
-#   coldspot-update --check    report only, don't install
-#   coldspot-update --json     machine-readable {current,latest,available}
-# Intended to run from coldspot-update.timer (daily) as root.
-#
-# Set COLDSPOT_UPDATE_SOURCED=1 before sourcing this file to load its functions
-# (tests/test_signing.sh does this) without running the update itself.
-set -uo pipefail
+"""coldspot-update — check GitHub for newer releases and install them.
 
-REPO="asuramaya/coldspot"
-VERSION_FILE="/usr/local/share/coldspot/VERSION"
-CONF="/etc/coldspot.conf"
-REL_BASE="https://github.com/${REPO}/releases/latest/download"
-# principal = WHO (the repo's stable identity); namespace = WHAT-FOR (what
-# this signature authorizes). Never conflate the two — see RELEASE.md.
-SIGN_PRINCIPAL="coldspot"
-SIGN_NAMESPACE="coldspot-release"
+Thin wrapper over the vendored sutra_update.py (UNIFY.md Wave A #1, the
+family's shared update spine: one grammar, one trust chain -- SHA256
+manifest hash-checked always, ssh-keygen -Y verify of the manifest's
+signature against the pinned anchor mandatory once armed (coldspot has
+been armed since v0.5.0, so this fails closed on any missing/failed
+check) -- one install-path detection, shared fleet-wide instead of a
+hand-rolled copy). This file supplies only what's coldspot-specific: the
+repo slug, the installed-version lookup (dpkg first for a future .deb
+install, VERSION file fallback for today's source install), where the
+signing anchor lives, and reading /etc/coldspot.conf's auto_update= toggle
+(coldspot, unlike some siblings, actually supports opt-in unattended
+installs via the daily timer).
 
-# Trust anchor: the installed copy first (what a real deployment reads), else
-# the repo-relative path (dev / source checkout / this file run in place).
-# Ships EMPTY until a real key is provisioned (docs/RELEASE-SIGNING.md) — while
-# it is, has_signing_key below is false and the updater fails closed.
-#
-# The matching SECRET key must NEVER be provisioned in CI: signing exists so
-# that a compromised GitHub account (or CI itself) is not the trust root. CI
-# only builds and publishes the deterministic `git archive` tarball; the
-# operator signs those exact published bytes BY HAND, offline, with a key that
-# never touches this repo's secrets, and uploads the resulting signature to
-# the release afterward (see .github/workflows/release.yml).
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd || echo /nonexistent)"
-ALLOWED_SIGNERS_CANDIDATES=(
-  "/usr/local/share/coldspot/allowed_signers"
-  "$HERE/release-signing/allowed_signers"
+  coldspot-update            install if a newer release exists (manual;
+                              this is what `coldspot update` runs)
+  coldspot-update --auto     timer tier; no-ops unless auto_update=on in
+                              /etc/coldspot.conf, and further refuses
+                              unless the signing anchor is armed
+  coldspot-update --check    notify tier: report only, don't install
+  coldspot-update --json     machine-readable {current,latest,available,armed}
+Intended to run from coldspot-update.timer (daily) as root.
+"""
+import os
+import subprocess
+import sys
+
+# --- sutra bootstrap (sutra 0.8.0; see BOOTSTRAP.md -- do not hand-edit) ----
+import os as _os
+import sys as _sys
+_PILL = "coldspot"
+_libdir = _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.realpath(__file__))),
+    "share", _PILL, "lib")
+if _libdir not in _sys.path:
+    _sys.path.insert(0, _libdir)
+del _os, _sys, _libdir, _PILL
+# --- end sutra bootstrap ----------------------------------------------------
+import sutra_update  # noqa: E402
+
+REPO_SLUG = "asuramaya/coldspot"
+PILL = "coldspot"
+CONF = "/etc/coldspot.conf"
+# This file lives at src/bin/coldspot-update -- one level under $PREFIX/bin
+# once installed, but TWO under the repo root in a checkout (bin/ sits
+# under src/, which is the checkout's own analog of $PREFIX; see
+# docs/ARCHITECTURE.md's Conventions). HERE is one dirname; the checkout
+# candidates below add the second explicitly, same fix as the sutra vendor
+# path (Alfred, msg 1736) and cmd_version()/_read_daemon_version().
+HERE = os.path.dirname(os.path.realpath(__file__))
+VERSION_CANDIDATES = (
+    "/usr/local/share/coldspot/VERSION",
+    "/usr/share/coldspot/VERSION",
+    os.path.join(HERE, "..", "..", "packaging", "VERSION"),
+)
+ANCHOR_CANDIDATES = (
+    "/usr/local/share/coldspot/allowed_signers",
+    "/usr/share/coldspot/allowed_signers",
+    os.path.join(HERE, "..", "..", "packaging", "release-signing", "allowed_signers"),
 )
 
-allowed_signers_path() {
-  local p
-  for p in "${ALLOWED_SIGNERS_CANDIDATES[@]}"; do
-    [[ -f "$p" ]] && { echo "$p"; return; }
-  done
-  echo "${ALLOWED_SIGNERS_CANDIDATES[0]}"
-}
 
-# Has a real key been provisioned, or is this still the empty placeholder?
-# allowed_signers lines are "principal [options] keytype base64key"; a file
-# that's absent, empty, or whitespace-only counts as "no key yet".
-has_signing_key() {
-  local f="${1:-$(allowed_signers_path)}"
-  [[ -s "$f" ]] && grep -q '[^[:space:]]' "$f"
-}
+def deb_version():
+    """The dpkg-registered package version, or None if not a .deb install
+    (coldspot has no .deb yet -- Pass 5 -- so this is always None today;
+    kept so Pass 5 doesn't need to touch this file again)."""
+    try:
+        out = subprocess.check_output(
+            ["dpkg-query", "-W", "-f=${Version}", PILL],
+            stderr=subprocess.DEVNULL)
+        return out.decode().strip() or None
+    except Exception:
+        return None
 
-# True/false: does the detached signature in $2 (a file path) verify $1 (a
-# file path, the exact bytes that were signed) against the pinned key(s) in
-# $3 (allowed_signers path, defaults to allowed_signers_path), for principal
-# $4 (defaults to SIGN_PRINCIPAL) and namespace $5 (defaults to
-# SIGN_NAMESPACE)? Principal is WHO (this repo's identity); namespace is
-# WHAT-FOR (what this signature authorizes) — a signature made for a
-# different purpose, or by a principal not pinned in allowed_signers, must
-# not verify here.
-verify_signature() {
-  local data_file="$1" sig_file="$2" signers="${3:-$(allowed_signers_path)}" \
-       principal="${4:-$SIGN_PRINCIPAL}" ns="${5:-$SIGN_NAMESPACE}"
-  ssh-keygen -Y verify -f "$signers" -I "$principal" -n "$ns" -s "$sig_file" \
-    < "$data_file" >/dev/null 2>&1
-}
 
-installed_version() {
-  tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null \
-    || coldspot version 2>/dev/null | awk '{print $2}'
-}
+def installed_version():
+    """Best-effort version for display/--check: dpkg first (authoritative
+    across a .deb upgrade), else whichever VERSION file a source install or
+    dev checkout wrote. Never fails outright -- an unreadable version is a
+    display/comparison problem, not a reason to refuse to check at all."""
+    v = deb_version()
+    if v:
+        return v
+    for path in VERSION_CANDIDATES:
+        try:
+            with open(path) as f:
+                v = f.read().strip()
+        except OSError:
+            continue
+        if v:
+            return v
+    return "unknown"
 
-latest_release_version() {
-  command -v curl >/dev/null 2>&1 || return 1
-  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-    | grep -m1 '"tag_name"' | cut -d'"' -f4 | sed 's/^v//'
-}
 
-version_gt() {  # true only when $1 is strictly newer than $2
-  [[ "$1" != "$2" ]] && [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" ]]
-}
+def auto_update_enabled():
+    """True only when /etc/coldspot.conf sets auto_update to a truthy
+    value. Absent key, missing file, or any other value keeps auto-update
+    OFF (secure default). A later line wins over an earlier one, same as
+    the original bash implementation's `tail -n1`."""
+    v = None
+    try:
+        with open(CONF) as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                key, sep, val = line.partition("=")
+                if sep and key.strip() == "auto_update":
+                    v = val.strip()
+    except OSError:
+        return False
+    return (v or "").lower() in ("on", "true", "yes", "1")
 
-# True only when /etc/coldspot.conf sets auto_update to a truthy value. Absent
-# key or any other value keeps auto-update OFF (secure default).
-auto_update_enabled() {
-  local v
-  v="$(sed -n 's/^[[:space:]]*auto_update[[:space:]]*=[[:space:]]*\([^#[:space:]]*\).*/\1/p' \
-       "$CONF" 2>/dev/null | tail -n1)"
-  case "${v,,}" in on|true|yes|1) return 0 ;; *) return 1 ;; esac
-}
 
-# Fetch, VERIFY (mandatory signature) and run the installer from the verified
-# tarball. Fails closed and returns non-zero on any missing/failed check; never
-# falls back to hash-only trust or to a network-piped script / the main branch.
-verify_and_install() {
-  command -v curl >/dev/null 2>&1 || { echo "curl is required to update." >&2; return 1; }
-  command -v tar  >/dev/null 2>&1 || { echo "tar is required to update." >&2; return 1; }
-
-  # Trust root #1: a real key must be pinned (not the shipped-empty placeholder).
-  if ! has_signing_key; then
-    echo "ERROR: no release-signing key provisioned yet; refusing to install (fail closed)." >&2
-    echo "       $(allowed_signers_path) is empty — see docs/RELEASE-SIGNING.md." >&2
-    return 1
-  fi
-  # Trust root #2: the verifier itself must be present.
-  command -v ssh-keygen >/dev/null 2>&1 || {
-    echo "ERROR: ssh-keygen not found; cannot verify release authenticity. Aborting." >&2
-    echo "       Install openssh-client and retry." >&2
-    return 1; }
-
-  local tmp tarball sums sig
-  tmp="$(mktemp -d)" || { echo "mktemp failed." >&2; return 1; }
-  trap 'rm -rf "$tmp"' RETURN
-  tarball="$tmp/coldspot.tar.gz"
-  sums="$tmp/coldspot.tar.gz.sha256"
-  sig="$tmp/coldspot.tar.gz.sha256.sig"   # signs the checksum manifest, not the tarball itself
-
-  echo "== fetching latest coldspot release =="
-  curl -fsSL "${REL_BASE}/coldspot.tar.gz"             -o "$tarball" \
-    || { echo "download failed (tarball)." >&2; return 1; }
-  curl -fsSL "${REL_BASE}/coldspot.tar.gz.sha256"       -o "$sums" \
-    || { echo "download failed (checksum manifest)." >&2; return 1; }
-  curl -fsSL "${REL_BASE}/coldspot.tar.gz.sha256.sig"   -o "$sig" \
-    || { echo "download failed (signature) — release is unsigned or unreachable; aborting." >&2; return 1; }
-
-  # MANDATORY: the checksum manifest itself must carry a valid signature from
-  # the pinned key. Signing the (small) manifest rather than the tarball
-  # directly still covers the tarball transitively, via the hash check below.
-  if ! verify_signature "$sums" "$sig"; then
-    echo "ERROR: signature verification FAILED; refusing to install." >&2
-    return 1
-  fi
-  echo "verified release signature."
-
-  command -v sha256sum >/dev/null 2>&1 || {
-    echo "ERROR: sha256sum not found; cannot bind the signed manifest to the tarball." >&2
-    return 1; }
-  local want got
-  want="$(awk '$2 == "coldspot.tar.gz" { print $1; exit }' "$sums")"
-  [[ -n "$want" ]] || { echo "ERROR: coldspot.tar.gz not found in the signed manifest." >&2; return 1; }
-  got="$(sha256sum "$tarball" | awk '{print $1}')"
-  [[ "$want" == "$got" ]] \
-    || { echo "ERROR: tarball doesn't match the signed checksum; aborting." >&2; return 1; }
-  echo "verified release checksum."
-
-  tar -xzf "$tarball" -C "$tmp" || { echo "extract failed." >&2; return 1; }
-  local inner
-  inner="$(find "$tmp" -maxdepth 2 -name install.sh -type f | head -n1)"
-  [[ -n "$inner" ]] || { echo "install.sh not found in verified archive." >&2; return 1; }
-  echo "running installer from verified tarball ..."
-  bash "$inner"   # local, signature-verified script — never a network pipe
-}
-
-# tests/test_signing.sh sources this file (with COLDSPOT_UPDATE_SOURCED=1) to
-# reach has_signing_key/verify_signature directly, without running an update.
-if [[ "${COLDSPOT_UPDATE_SOURCED:-0}" != "1" ]]; then
-
-# ---- arg parsing (order-independent flags; unknown args ignored) -----------
-auto=0 check=0 json=0
-for a in "$@"; do
-  case "$a" in
-    --auto)  auto=1 ;;
-    --check) check=1 ;;
-    --json)  json=1 ;;
-    *) ;;
-  esac
-done
-
-# Opt-in gate for the timer path: exit early (before any network work) unless
-# the user turned on auto_update in /etc/coldspot.conf. Manual runs (auto=0)
-# skip this entirely — running `coldspot update` is explicit consent.
-if [[ "$auto" -eq 1 && "$json" -eq 0 ]] && ! auto_update_enabled; then
-  echo "auto-update is disabled; set auto_update=on in ${CONF} to enable."
-  exit 0
-fi
-
-cur="$(installed_version)"
-latest="$(latest_release_version)"
-
-if [[ "$json" -eq 1 ]]; then
-  avail=false
-  [[ -n "$latest" ]] && version_gt "$latest" "$cur" && avail=true
-  printf '{"current":"%s","latest":%s,"available":%s}\n' \
-    "$cur" "$([[ -n "$latest" ]] && printf '"%s"' "$latest" || echo null)" "$avail"
-  exit 0
-fi
-
-if [[ -z "$latest" ]]; then
-  echo "update check failed (offline?)."
-  exit 0
-fi
-if ! version_gt "$latest" "$cur"; then
-  echo "coldspot is up to date (installed ${cur:-unknown}, latest ${latest})."
-  exit 0
-fi
-
-echo "update available: ${cur:-unknown} -> ${latest}"
-[[ "$check" -eq 1 ]] && exit 0
-
-echo "updating coldspot ${cur:-unknown} -> ${latest} ..."
-verify_and_install
-exit $?
-
-fi
+if __name__ == "__main__":
+    sys.exit(sutra_update.main(
+        pill=PILL, slug=REPO_SLUG, installed_version=installed_version(),
+        anchor_candidates=list(ANCHOR_CANDIDATES),
+        auto_enabled=auto_update_enabled()))

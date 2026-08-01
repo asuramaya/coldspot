@@ -54,8 +54,8 @@ uninstall:
 	./uninstall.sh
 
 lint:
-	-ruff check src/bin/coldspot src/bin/coldspotd 2>/dev/null || true
-	shellcheck -e $(SHELLCHECK_EXCLUDES) install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-update src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh tests/test_signing.sh
+	-ruff check src/bin/coldspot src/bin/coldspotd src/bin/coldspot-update 2>/dev/null || true
+	shellcheck -e $(SHELLCHECK_EXCLUDES) install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh
 
 # Kept as its own target (not just a line inside `check`) so ci.yml can call
 # it directly: REPO-STANDARD.md's rule is that ci.yml invokes make targets,
@@ -63,14 +63,15 @@ lint:
 # failure phanspeed hit -- a shellcheck/py_compile list hand-duplicated into
 # ci.yml silently fell out of sync with the Makefile after Wave A).
 pycheck:
-	python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/share/coldspot/lib/sutra.py
+	python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/bin/coldspot-update \
+	    src/share/coldspot/lib/sutra.py src/share/coldspot/lib/sutra_update.py src/share/coldspot/lib/sutra_xen.py
 
 check: lint check-sutra pycheck
-	bash -n install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-update src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh
+	bash -n install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh
 	node --check $(EXT)/extension.js
 	python3 -c "import json; json.load(open('$(EXT)/metadata.json'))"
 	python3 tests/test_units.py
-	bash tests/test_signing.sh
+	python3 tests/test_signing.py
 	@echo "all static checks passed"
 
 # Drift guard for the three vendored sutra modules (sutra, sutra_update,

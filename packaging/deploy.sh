@@ -47,6 +47,8 @@ for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspo
 done
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
+# coldspot-update's installed-anchor candidate -- see install.sh's note.
+install -m 0644 -o root -g root "$SRC/packaging/release-signing/allowed_signers" "$SHAREDIR/allowed_signers"
 # coldspotd/coldspot both `import sutra` as a sibling, via the bootstrap
 # preamble — see install.sh's note. Private per-pill dir, never $BINDIR.
 install -d -m 0755 "$SHAREDIR/lib"
