@@ -9,7 +9,42 @@ EXT := src/extension/coldspot@asuramaya
 # (has_signing_key()'s optional arg is genuinely optional, called both ways).
 SHELLCHECK_EXCLUDES = SC2015,SC2119,SC2120
 
-.PHONY: help install pill deploy uninstall check lint pycheck bpf smoke attack sync-signers check-sutra check-repo clean
+# The family's shared recipe layer (sutra.mk, vendored like code under its
+# own .version/.commit anchor -- see docs/BOOTSTRAP.md in the sutra repo and
+# ruling 3e44bd95). Supplies check-sutra (integrity+freshness for the three
+# vendored .py modules, plus pill.js via SUTRA_EXT_DIR below), SUTRA_ROOT_ROWS
+# (the canonical tracked-files row count check-repo uses), and
+# check-vendored-path[-all] (the checkout-run resolution guard) -- replacing
+# ~130 lines coldspot used to hand-maintain for the same three things. PILL
+# must be set before the include; everything else in sutra.mk resolves
+# relative to its own vendored location, never this Makefile's.
+PILL := coldspot
+include src/share/coldspot/lib/sutra.mk
+
+# coldspot vendors pill.js too (sutra.mk's own check-sutra loops only the
+# three .py modules by default; this opts pill.js into the same
+# integrity+freshness check via sutra.mk's own escape hatch). coldspot was
+# confirmed the only pill in the family with an ungated pill.js before this
+# (Alfred, msg 2817) -- pill.version/pill.commit were already vendored and
+# tracked, just never checked.
+SUTRA_EXT_DIR := $(EXT)
+
+# sutra.mk's check-vendored-path validates one binary per call; coldspot
+# carries the bootstrap preamble in all four of its binaries, so
+# check-vendored-path-all loops it. coldspot-update binds sutra_update, not
+# sutra -- the ":sutra_update" form checks that one against the right
+# attribute; the other three take sutra.mk's own default
+# (SUTRA_CHECK_MODULE=sutra).
+SUTRA_CHECK_BINS := src/bin/coldspot src/bin/coldspotd src/bin/coldspot-healthcheck src/bin/coldspot-update:sutra_update
+
+# SUTRA_CHECK_ARGS deliberately left unset: check-vendored-path's resolution
+# check is safe against any binary regardless of argument parsing and needs
+# no subprocess call to prove it (0.11.0's RAMstein incident -- a generic
+# --help default fell through a hand-rolled arg parser into a real socket
+# call against the live daemon; sutra.mk's SUTRA_CHECK_ARGS has no default
+# for exactly this reason).
+
+.PHONY: help install pill deploy uninstall check lint lint-ruff lint-shell pycheck bpf smoke attack sync-signers check-repo clean
 
 help:
 	@echo "coldspot targets:"
@@ -53,9 +88,19 @@ deploy:
 uninstall:
 	./uninstall.sh
 
-lint:
+# Split into two so CI can report each separately (a named step per target,
+# REPO-STANDARD.md's ruling: ci.yml calls Makefile targets, never carries its
+# own copy of the command behind one) -- shellcheck now also runs natively
+# inside pill-ci.yml's shared job via shellcheck-files, this stays for local
+# `make lint`/`make check` and CI's ruff-only step (no pill-ci.yml input
+# covers ruff; RAMstein, the adoption reference, doesn't use it at all).
+lint-ruff:
 	-ruff check src/bin/coldspot src/bin/coldspotd src/bin/coldspot-update src/bin/coldspot-healthcheck 2>/dev/null || true
+
+lint-shell:
 	shellcheck -e $(SHELLCHECK_EXCLUDES) install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh
+
+lint: lint-ruff lint-shell
 
 # Kept as its own target (not just a line inside `check`) so ci.yml can call
 # it directly: REPO-STANDARD.md's rule is that ci.yml invokes make targets,
@@ -66,7 +111,7 @@ pycheck:
 	python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/bin/coldspot-update src/bin/coldspot-healthcheck \
 	    src/share/coldspot/lib/sutra.py src/share/coldspot/lib/sutra_update.py src/share/coldspot/lib/sutra_xen.py
 
-check: lint check-sutra pycheck
+check: lint check-sutra check-vendored-path-all pycheck
 	bash -n install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh
 	node --check $(EXT)/extension.js
 	python3 -c "import json; json.load(open('$(EXT)/metadata.json'))"
@@ -74,55 +119,12 @@ check: lint check-sutra pycheck
 	python3 tests/test_signing.py
 	@echo "all static checks passed"
 
-# Drift guard for the three vendored sutra modules (sutra, sutra_update,
-# sutra_xen — vendored unconditionally, whether or not coldspot imports each
-# one yet), now living in src/share/coldspot/lib/ per the private-lib-dir move (ruling
-# 3e44bd95) rather than beside the binaries. Integrity (hash matches what
-# vendor.sh recorded, so the copy wasn't hand-edited) is a hard failure and
-# always runs, per module. Freshness, when the canonical checkout is present
-# (normally isn't in CI), is three-way: compared against each module's OWN
-# last-modifying commit in canonical, never canonical repo HEAD (decision
-# 325b1969, sutra 0.7.3: comparing against repo HEAD false-positives LAG on
-# every commit canonical ships, including ones that never touch that file).
-# Recorded at or after that commit -> fresh. A strict ancestor of it -> LAG,
-# a real vendor gap, warn only. Not in canonical's history at all -> DRIFT,
-# hard fail. This only proves the dev-tree copy; the INSTALLED copy under
-# $SHAREDIR/lib is a separate, not-yet-built check (Pass 4's check_health).
-check-sutra:
-	@canon="$$HOME/code/REPOS/sutra"; \
-	fail=0; \
-	for mod in sutra sutra_update sutra_xen; do \
-	    py="src/share/coldspot/lib/$$mod.py"; ver="src/share/coldspot/lib/$$mod.version"; cmt="src/share/coldspot/lib/$$mod.commit"; \
-	    v=$$(cut -d' ' -f1 "$$ver"); \
-	    sha=$$(awk '{print $$NF}' "$$ver"); \
-	    actual=$$(sha256sum "$$py" | cut -d' ' -f1); \
-	    if [ "$$sha" != "$$actual" ]; then \
-	        echo "check-sutra FAIL: $$py doesn't match $$ver" \
-	             "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh src/share/coldspot/lib src/extension/coldspot@asuramaya --bootstrap=coldspot)"; \
-	        fail=1; continue; \
-	    fi; \
-	    echo "check-sutra: integrity ok ($$mod $$v, sha256 $$sha)"; \
-	    if [ -d "$$canon/.git" ]; then \
-	        if [ ! -f "$$cmt" ]; then \
-	            echo "check-sutra: freshness unknown for $$mod (no $$cmt anchor, an older vendor)"; \
-	        else \
-	            recorded=$$(cat "$$cmt"); \
-	            filehead=$$(git -C "$$canon" log -1 --format=%H -- "$$mod.py"); \
-	            if git -C "$$canon" merge-base --is-ancestor "$$filehead" "$$recorded" 2>/dev/null; then \
-	                echo "check-sutra: freshness ok ($$mod vendored from $$recorded, at or after its own head $$filehead)"; \
-	            elif git -C "$$canon" merge-base --is-ancestor "$$recorded" "$$filehead" 2>/dev/null; then \
-	                echo "check-sutra: LAG ($$mod vendored from $$recorded, canonical has since moved to $$filehead) -- warn, not a failure"; \
-	            else \
-	                echo "check-sutra FAIL: DRIFT ($$mod's vendored commit $$recorded is not in canonical's history at $$canon) -- re-vendor"; \
-	                fail=1; \
-	            fi; \
-	        fi; \
-	    fi; \
-	done; \
-	if [ ! -d "$$canon/.git" ]; then \
-	    echo "check-sutra: canonical sutra checkout not present, freshness skipped"; \
-	fi; \
-	exit $$fail
+# check-sutra (integrity+freshness of the three vendored .py modules and,
+# via SUTRA_EXT_DIR above, pill.js) and check-vendored-path[-all] (the
+# checkout-run resolution guard across all four sutra-importing binaries)
+# both now come from sutra.mk, included above -- was ~90 hand-maintained
+# lines here before Pass 5 (2026-08-01), same recipe every sibling pill
+# used to hand-copy independently and drift from.
 
 bpf:
 	cd src/bpf && bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
@@ -155,7 +157,7 @@ check-repo:
 	if [ ! -e src/data/man/man1/coldspot.1 ] && ! grep -q 'man1/coldspot.1' docs/ARCHITECTURE.md 2>/dev/null; then \
 	    echo "check-repo FAIL: no src/data/man/man1/coldspot.1 and no exemption for it"; fail=1; \
 	fi; \
-	rows=$$(git ls-files | cut -d/ -f1 | sort -u | wc -l); \
+	rows=$(SUTRA_ROOT_ROWS); \
 	if [ "$$rows" -gt 12 ]; then \
 	    echo "check-repo FAIL: root has $$rows rows, standard caps it at 12"; fail=1; \
 	else \

@@ -164,7 +164,12 @@ integration, not the primitives.
   per-pill dir rather than the shared bin dir (two pills vendoring identically-named files into
   the same `/usr/local/bin` make each other uninstallable; ruling `3e44bd95`). `make check-sutra`
   proves each copy: integrity is a hard failure, freshness is three-way (match, lag-warns, or
-  drift-fails against canonical history). Every binary that imports sutra carries the canonical
+  drift-fails against canonical history) — the recipe itself is `sutra.mk` (vendored the same way
+  as the code, under `src/share/coldspot/lib/sutra.mk` + its own `.version`/`.commit` anchor),
+  `include`d from the root `Makefile`, not hand-maintained here; `check-vendored-path-all` (same
+  file) proves the checkout-run resolution across all four sutra-importing binaries.
+  `SUTRA_EXT_DIR` opts `pill.js` into the same integrity+freshness check as the `.py` modules.
+  Every binary that imports sutra carries the canonical
   bootstrap preamble (see `sutra`'s `BOOTSTRAP.md`) right before the `import sutra` line, which
   locates the lib dir as `dirname(dirname(realpath(__file__)))/share/coldspot/lib` — relative to
   the binary's own location, never told a prefix. That is why the vendored copy has to live at

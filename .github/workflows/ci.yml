@@ -9,51 +9,60 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  # The family's shared CI core (sutra.mk's sibling layer -- see
+  # docs/BOOTSTRAP.md in the sutra repo). Pinned to a commit SHA, not @main
+  # and not a tag, per pill-ci.yml's own header: sutra cuts no tagged
+  # release yet, and a floating @main ref would move every adopting pill's
+  # CI the instant this file changes, with no per-pill review step. Pinned
+  # to sutra's current HEAD (0.12.1) at time of adoption -- this repo just
+  # re-vendored to 0.12.1 (commit 8758e57), so it runs the matching recipe,
+  # not RAMstein's older 0.11.1 pin.
+  shared:
+    uses: asuramaya/sutra/.github/workflows/pill-ci.yml@9b18e0a02485ec0cadde34ca28525bdbfdd4cd99
+    with:
+      python-files: "src/bin/coldspot src/bin/coldspotd src/bin/coldspot-update src/bin/coldspot-healthcheck src/share/coldspot/lib/sutra.py src/share/coldspot/lib/sutra_update.py src/share/coldspot/lib/sutra_xen.py"
+      shell-files: "install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh"
+      shellcheck-files: "install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh"
+      shellcheck-exclude: "SC2015,SC2119,SC2120"
+      has-extension: true
+      extension-js: "src/extension/coldspot@asuramaya/extension.js"
+      extension-metadata: "src/extension/coldspot@asuramaya/metadata.json"
+      man-pages: "src/data/man/man1/coldspot.1 src/data/man/man8/coldspotd.8"
+      # coldspot's control-socket fuzz suite runs no-root, no real hardware --
+      # unlike phanspeed (needs Dell SMM) this repo can and does run it in CI.
+      run-attack: true
+      # run-check-version stays false (default): coldspot has no
+      # check-version target -- packaging/VERSION is the single source of
+      # truth, check-repo's own rule enforces it, same convention as
+      # RAMstein/phanspeed. run-signing-verify also stays false: pill-ci.yml
+      # hardcodes `bash tests/test_signing.sh`, but coldspot (like phanspeed)
+      # migrated this to tests/test_signing.py at Pass 4 -- run explicitly
+      # below instead, same reason phanspeed folds its own into `make smoke`.
+
+  # Genuinely coldspot-specific, per pill-ci.yml's own header ("stays as a
+  # sibling job in the calling pill's own ci.yml"): ruff (no input exists
+  # for it in pill-ci.yml -- RAMstein, the original adoption reference,
+  # doesn't use ruff at all, so this isn't a gap closed upstream, it's a
+  # genuine coldspot-only need), the checkout-run resolution guard across
+  # all four binaries that carry the bootstrap preamble, the release-signing
+  # trust-chain test (test_signing.py, not test_signing.sh -- see the note
+  # above), and the contract test suite (no pill-ci.yml input covers this
+  # either).
+  coldspot-specific:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
-      # First, before anything below can create a build/dist artifact that
-      # would otherwise trip the row-count check for the wrong reason
-      # (REPO-STANDARD.md: order the structure gate before any build step,
-      # not just exclude gitignored paths from the count).
-      - name: Repo structure gate (REPO-STANDARD.md)
-        run: make check-repo
+      - name: Ruff lint
+        run: make lint-ruff
 
-      # Calls into the Makefile rather than hand-copying its file list and
-      # exclusions: a list duplicated into ci.yml drifts silently the moment
-      # someone adds a file to one side and not the other (phanspeed's CI
-      # was red for five straight commits from exactly this).
-      - name: ShellCheck + ruff
-        run: make lint
-
-      - name: Python (syntax)
-        run: make pycheck
-
-      - name: Sutra vendor drift guard
-        run: make check-sutra
-
-      - name: GNOME extension (syntax)
-        run: node --check "src/extension/coldspot@asuramaya/extension.js"
-
-      - name: GNOME extension metadata (valid JSON)
-        run: python3 -c "import json; json.load(open('src/extension/coldspot@asuramaya/metadata.json'))"
-
-      - name: man page (syntax)
-        # -t -k, not just -Tutf8 -ww: the bare form exits 0 while silently
-        # skipping the table and UTF-8 preprocessor passes, so a malformed
-        # table would render clean. Family-wide hardening (Alfred, msg 1628).
-        run: groff -t -k -man -Tutf8 -ww src/data/man/man1/coldspot.1 src/data/man/man8/coldspotd.8 > /dev/null
+      - name: Vendored-path resolution (all four binaries)
+        run: make check-vendored-path-all
 
       - name: Unit + contract tests
         run: python3 tests/test_units.py
 
       - name: Release-signing verify path
         run: python3 tests/test_signing.py
-
-      - name: Daemon smoke test
-        run: bash tests/smoke.sh
-
-      - name: Control socket fuzz (adversarial, no root)
-        run: python3 tests/attack_socket.py
