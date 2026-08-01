@@ -106,3 +106,8 @@ need to be in the `coldspot` group, which `install.sh` adds you to. Log out and 
 **The pill doesn't show the latest layout after an update.** See the GNOME pill note above:
 this shell may not support live reload yet (`Extensions.ReloadExtension` is declared but not
 always implemented), so log out and back in once.
+
+**Something feels off and you want a one-line verdict.** `coldspot-healthcheck` checks status.json
+freshness, a control-socket ping, and the installed sutra modules against their own installed
+anchors — exit 0 and a summary line when healthy, nonzero and the specific reason when not.
+Read-only: it never restarts anything (`coldspotd.service` already does that on its own).

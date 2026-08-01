@@ -150,7 +150,7 @@ echo "== coldspot ${VERSION} installer =="
 
 # 1. binaries + version marker
 echo "-- binaries -> $BINDIR"
-for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
+for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill coldspot-healthcheck; do
   install -m 0755 -o root -g root "$SRC/src/bin/$b" "$BINDIR/$b"
 done
 install -d -m 0755 "$SHAREDIR"
@@ -274,6 +274,7 @@ cat <<EOF
   coldspot flows             per-destination breakdown (needs the bpf core)
   coldspot update [--check]  pull newer releases (opt-in daily timer, see below)
   coldspot-pill install      add the GNOME pill to YOUR account (as yourself, no sudo)
+  coldspot-healthcheck       one-line vitals verdict (exit 0 = healthy)
   Remove:  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/uninstall.sh | sudo bash
 
 $GROUP_NOTE

@@ -9,7 +9,7 @@ BPF maps, or nftables.
 
 ```
 src/bin/          coldspot (CLI), coldspotd (daemon), coldspot-stance, coldspot-bpf (BPF loader),
-                   coldspot-update, coldspot-pill (per-account installer)
+                   coldspot-update, coldspot-pill (per-account installer), coldspot-healthcheck
 src/bpf/          coldspot.bpf.c, coldspot_helpers.h, vmlinux.h (generated, not committed logic)
 src/data/config/  coldspot.conf defaults
 src/share/coldspot/lib/   vendored sutra*.py (private per-pill dir; a checkout's own analog of
@@ -178,6 +178,15 @@ integration, not the primitives.
   class directly). Never hand-derive the path, re-vendor with `--bootstrap=coldspot` instead.
   `coldspotd` uses `sutra` directly: `ControlServer` is the control socket, `write_status()` is
   every atomic state write.
+* `coldspot-healthcheck` (thin wrapper over `sutra.check_health`) proves what `check-sutra` can't:
+  the vendored modules as actually INSTALLED at `$SHAREDIR/lib`, against their own installed
+  `.version` anchors, plus status.json freshness and a control-socket ping. `check-sutra` only ever
+  reads the dev-tree copy under `src/share/coldspot/lib/`; the machine runs whatever got installed,
+  and an anchorless install dir is exactly how a mixed-version `sutra` sat undetected on a real
+  machine before this check existed (`BOOTSTRAP.md`, ruling `3e44bd95`). A missing anchor means an
+  install predating this check, not tampering — that's a third state, not a failure. Passive by
+  design: it diagnoses and reports, never restarts anything (`coldspotd.service` already has
+  `Restart=on-failure`).
 
 ## Standard exemptions
 
@@ -189,6 +198,5 @@ choice.
 |---|---|
 | daemon runs fully as root, not capability-dropped | the v1 BPF core and its loader need `CAP_BPF`/`CAP_NET_ADMIN`, and coldspot hasn't yet split a capability-scoped worker off the daemon. Tracked as future work, not a rejected idea; see the commented `AmbientCapabilities` line in `src/data/systemd/system/coldspotd.service` |
 | `src/share/coldspot/lib/sutra_xen.py` is vendored but unused | no coldspot integration point yet -- `coldspot-update` adopted `sutra_update.py` (Pass 4), `sutra_xen.py` is Xen guest-surface specific and coldspot has no guest-surface concern |
-| `check-sutra` only proves the dev-tree copy under `src/share/coldspot/lib/`, not the installed copy under `$SHAREDIR/lib` | the same sha256/anchor logic applies unchanged once pointed at the installed path; wiring it in is Pass 4's `check_health` item, so the installed copy stays checkable rather than just assumed |
 | `extension.js` keeps `pill.js`'s `UpdateSurface`/`StatusWatcher`/`sendCmd`/menu-row helpers unadopted, using its own status-read + subprocess-CLI + polling shape instead | `PALETTE`/`CHIP`/`CHIP_ON`/`dataRow` collapsed to the vendored copy (Pass 4); adopting the rest is a real behavioral change (event-driven status watching, socket commands instead of CLI subprocess calls, an update-row UI addition) deliberately out of scope for a same-behavior dedup pass |
 | no `.deb` yet | owed under a standing ruling, sized as its own milestone; a new artifact type needs its own verification and shouldn't ride a doc/CI/tree pass |

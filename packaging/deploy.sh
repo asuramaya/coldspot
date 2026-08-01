@@ -42,7 +42,7 @@ core_loaded=0; [[ -e "$PIN/usage" ]] && core_loaded=1
 #    loader before the reload below is the whole point: stale loader = the new
 #    programs in the object never get attached.
 echo "== bins -> $BINDIR =="
-for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
+for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill coldspot-healthcheck; do
   install -m 0755 -o root -g root "$SRC/src/bin/$b" "$BINDIR/$b"
 done
 install -d -m 0755 "$SHAREDIR"

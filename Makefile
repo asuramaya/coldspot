@@ -54,7 +54,7 @@ uninstall:
 	./uninstall.sh
 
 lint:
-	-ruff check src/bin/coldspot src/bin/coldspotd src/bin/coldspot-update 2>/dev/null || true
+	-ruff check src/bin/coldspot src/bin/coldspotd src/bin/coldspot-update src/bin/coldspot-healthcheck 2>/dev/null || true
 	shellcheck -e $(SHELLCHECK_EXCLUDES) install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh
 
 # Kept as its own target (not just a line inside `check`) so ci.yml can call
@@ -63,7 +63,7 @@ lint:
 # failure phanspeed hit -- a shellcheck/py_compile list hand-duplicated into
 # ci.yml silently fell out of sync with the Makefile after Wave A).
 pycheck:
-	python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/bin/coldspot-update \
+	python3 -m py_compile src/bin/coldspotd src/bin/coldspot src/bin/coldspot-update src/bin/coldspot-healthcheck \
 	    src/share/coldspot/lib/sutra.py src/share/coldspot/lib/sutra_update.py src/share/coldspot/lib/sutra_xen.py
 
 check: lint check-sutra pycheck
@@ -174,7 +174,7 @@ check-repo:
 	fi; \
 	if grep -rn "VERSION[[:space:]]*=[[:space:]]*['\"][0-9]" \
 	    src/bin/coldspot src/bin/coldspotd src/bin/coldspot-stance src/bin/coldspot-bpf \
-	    src/bin/coldspot-update src/bin/coldspot-pill install.sh uninstall.sh \
+	    src/bin/coldspot-update src/bin/coldspot-pill src/bin/coldspot-healthcheck install.sh uninstall.sh \
 	    packaging/deploy.sh packaging/sync-signers.sh "$(EXT)/extension.js" 2>/dev/null; then \
 	    echo "check-repo FAIL: a literal version string exists outside packaging/VERSION"; fail=1; \
 	fi; \

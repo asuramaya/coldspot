@@ -43,7 +43,7 @@ echo "-- detaching bpf core + dropping siege table"
 nft delete table inet coldspot 2>/dev/null || true
 
 echo "-- removing files"
-for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill; do
+for b in coldspot coldspotd coldspot-stance coldspot-bpf coldspot-update coldspot-pill coldspot-healthcheck; do
   rm -f "$BINDIR/$b"
 done
 # $SHAREDIR/lib (the current vendor location) is covered by the rm -rf below.
