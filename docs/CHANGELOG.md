@@ -68,7 +68,7 @@ at all).
   bpf build artifact and a stray Python `__pycache__`, in this case).
 - **Release artifact shape unified with the rest of the family**: this
   release publishes `coldspot.tar.gz` + the `.deb` + one signed
-  `SHA256SUMS` manifest covering both, matching ByeByte/RAMstein/kast/
+  `SHA256SUMS` manifest covering both, matching byebyte/RAMstein/kast/
   phanspeed instead of coldspot's own single-purpose
   `coldspot.tar.gz.sha256`. That older file is still published alongside,
   unchanged, **through this release only** — a checkout's `install.sh`

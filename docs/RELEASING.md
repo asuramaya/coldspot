@@ -33,7 +33,7 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 CI then builds `coldspot.tar.gz` and `coldspot_X.Y.Z_all.deb`, folds both into one `SHA256SUMS`
-manifest (the family's unified artifact shape, ruling `0d38a1f9`, matching ByeByte/RAMstein/
+manifest (the family's unified artifact shape, ruling `0d38a1f9`, matching byebyte/RAMstein/
 kast/phanspeed), and publishes everything unsigned — plus, through 0.6.0 only, the older
 single-purpose `coldspot.tar.gz.sha256` alongside it, so an `install.sh` checkout that predates
 the `SHA256SUMS` fallback (added at 0.6.0) still resolves. Drop the legacy file at 0.7.0. CI
