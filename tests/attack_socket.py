@@ -41,6 +41,7 @@ Two buckets of results:
 
 Run as your normal user:  python3 tests/attack_socket.py   (or: make attack)
 """
+import atexit
 import json
 import os
 import shutil
@@ -81,6 +82,7 @@ def weak(msg):
 # its own installed path -- resolves for real, same as tests/smoke.sh. run_dir
 # itself stays just the runtime state target (sed-rewritten /run, /var/lib).
 run_dir = tempfile.mkdtemp(prefix="coldspot-attack-")
+atexit.register(shutil.rmtree, run_dir, ignore_errors=True)
 bin_dir = os.path.join(run_dir, "bin")
 lib_dir = os.path.join(run_dir, "share", "coldspot", "lib")
 os.makedirs(bin_dir)
