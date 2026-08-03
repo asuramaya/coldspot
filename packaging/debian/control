@@ -3,6 +3,7 @@ Version: @VERSION@
 Architecture: all
 Maintainer: asuramaya <asuramaya@users.noreply.github.com>
 Depends: python3 (>= 3.8), systemd, openssh-client, nftables, network-manager
+Suggests: bandwhich, nethogs
 Section: net
 Priority: optional
 Homepage: https://github.com/asuramaya/coldspot

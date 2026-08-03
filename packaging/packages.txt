@@ -9,7 +9,7 @@
 # exact remedy at the moment it's actually needed, RAMstein 4ea6184's shape).
 
 # --- hard (packaging/debian/control Depends) --------------------------------
-python3         # the interpreter itself (>= 3.8)
+python3 (>= 3.8)  # the interpreter itself
 systemd         # coldspotd.service, coldspot-update.timer, `systemctl` calls
 openssh-client  # `ssh-keygen -Y verify`: coldspot-update's release-signature
                 # check against release-signing/allowed_signers, and
@@ -38,12 +38,14 @@ network-manager # coldspotd's own metered-link detection (metered_iface()/
                 # what decides this: domain exemption alongside nftables,
                 # not an optional nicety.
 
-# --- optional (documentation only — never wired to any coldspot verb, so
-# there is nothing here for packaging/debian/control to Suggest; listed for
-# anyone who wants an alternative live view alongside coldspot's own) -------
-#   bandwhich  nethogs
+# --- optional (packaging/debian/control Suggests — apt does NOT install
+# these by default; neither is wired to any coldspot verb or checked for at
+# runtime, they're standalone alternative tools relevant to the same job as
+# `coldspot top`, not something coldspot degrades against) ------------------
+bandwhich  # per-app live-rate view, an alternative/companion to `coldspot top`
+nethogs    # same niche as bandwhich — a live per-process bandwidth monitor
 
-# --- build-time only, v1 eBPF core (packages.txt prose + CI ONLY — never
+# --- build (v1 eBPF core; packages.txt prose + CI ONLY — never
 # packaging/debian/control, in any tier: a compiler toolchain has no
 # business shipping to every user's desktop for a v1 feature that already
 # degrades cleanly to v0 systemd/proc accounting) ---------------------------
