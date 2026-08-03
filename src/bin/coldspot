@@ -37,7 +37,7 @@ import os
 import subprocess
 import sys
 
-# --- sutra bootstrap (sutra 0.12.1; see BOOTSTRAP.md -- do not hand-edit) ----
+# --- sutra bootstrap (sutra 0.12.9; see BOOTSTRAP.md -- do not hand-edit) ----
 import os as _os
 import sys as _sys
 _PILL = "coldspot"
