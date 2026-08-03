@@ -37,7 +37,7 @@ jobs:
           # Retained for one release cycle (0.6.0 only, dropped at 0.7.0 --
           # see docs/CHANGELOG.md): the family's artifact-shape unification
           # (ruling 0d38a1f9) moves the signed manifest to SHA256SUMS,
-          # matching byebyte/RAMstein/kast/phanspeed; this single-purpose
+          # matching byebyte/ramstein/kast/phanspeed; this single-purpose
           # file lets any install.sh checkout that predates the fallback
           # (added below) keep resolving against the SAME bytes/format it
           # always has -- awk '$2 == "coldspot.tar.gz"' against a one-line
@@ -58,7 +58,7 @@ jobs:
       # UNSIGNED from here; the operator signs the published SHA256SUMS bytes
       # BY HAND, offline, with the physical FIDO2 key, and runs `gh release
       # upload <tag> SHA256SUMS.sig --clobber` after (SHA256SUMS is now the
-      # primary signed manifest, matching byebyte/RAMstein/kast/phanspeed;
+      # primary signed manifest, matching byebyte/ramstein/kast/phanspeed;
       # see the comment above coldspot.tar.gz.sha256's generation).
 
       - name: Create or update GitHub release

@@ -16,7 +16,7 @@ jobs:
   # CI the instant this file changes, with no per-pill review step. Pinned
   # to sutra's current HEAD (0.12.1) at time of adoption -- this repo just
   # re-vendored to 0.12.1 (commit 8758e57), so it runs the matching recipe,
-  # not RAMstein's older 0.11.1 pin.
+  # not ramstein's older 0.11.1 pin.
   shared:
     uses: asuramaya/sutra/.github/workflows/pill-ci.yml@9b18e0a02485ec0cadde34ca28525bdbfdd4cd99
     with:
@@ -34,14 +34,14 @@ jobs:
       # run-check-version stays false (default): coldspot has no
       # check-version target -- packaging/VERSION is the single source of
       # truth, check-repo's own rule enforces it, same convention as
-      # RAMstein/phanspeed. run-signing-verify also stays false: pill-ci.yml
+      # ramstein/phanspeed. run-signing-verify also stays false: pill-ci.yml
       # hardcodes `bash tests/test_signing.sh`, but coldspot (like phanspeed)
       # migrated this to tests/test_signing.py at Pass 4 -- run explicitly
       # below instead, same reason phanspeed folds its own into `make smoke`.
 
   # Genuinely coldspot-specific, per pill-ci.yml's own header ("stays as a
   # sibling job in the calling pill's own ci.yml"): ruff (no input exists
-  # for it in pill-ci.yml -- RAMstein, the original adoption reference,
+  # for it in pill-ci.yml -- ramstein, the original adoption reference,
   # doesn't use ruff at all, so this isn't a gap closed upstream, it's a
   # genuine coldspot-only need), the checkout-run resolution guard across
   # all four binaries that carry the bootstrap preamble, the release-signing

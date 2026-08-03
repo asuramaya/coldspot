@@ -53,12 +53,12 @@ at all).
   found in the process: coldspot was the only pill in the family whose
   vendored `pill.js` was never integrity/freshness-checked at all. `ci.yml`
   now calls `asuramaya/sutra/.github/workflows/pill-ci.yml` as a shared
-  reusable job instead of hand-copying the same checks byebyte/RAMstein/
+  reusable job instead of hand-copying the same checks byebyte/ramstein/
   phanspeed each maintain their own drifting copy of.
 - **A `.deb` port** (ruling `0d38a1f9`, revoking coldspot's earlier
   deferral) — `make deb`/`packaging/build-deb.sh`, no debhelper, mirroring
   phanspeed's reference shape. Verified against the family's actual
-  acceptance bar, not just "the deb builds": installed byebyte + RAMstein +
+  acceptance bar, not just "the deb builds": installed byebyte + ramstein +
   coldspot together in one container from their three independently-built
   `.deb`s — zero shared file paths, no install collision, each binary
   resolves its own vendored `sutra.py`, none of the others'. `apt-get
@@ -68,7 +68,7 @@ at all).
   bpf build artifact and a stray Python `__pycache__`, in this case).
 - **Release artifact shape unified with the rest of the family**: this
   release publishes `coldspot.tar.gz` + the `.deb` + one signed
-  `SHA256SUMS` manifest covering both, matching byebyte/RAMstein/kast/
+  `SHA256SUMS` manifest covering both, matching byebyte/ramstein/kast/
   phanspeed instead of coldspot's own single-purpose
   `coldspot.tar.gz.sha256`. That older file is still published alongside,
   unchanged, **through this release only** — a checkout's `install.sh`

@@ -1,4 +1,4 @@
-# coldspot — runtime dependencies, hard vs optional (RAMstein/Till's
+# coldspot — runtime dependencies, hard vs optional (ramstein/Till's
 # packages.txt is the reference shape — operator ruling 2cd900ce).
 #
 # Pure Python standard library — no pip/PyPI dependencies at all. Everything
@@ -6,7 +6,7 @@
 # to, split hard (packaging/debian/control's Depends, dpkg pulls it in
 # automatically) vs optional (packaging/debian/control's Suggests — apt does
 # NOT install these by default; each verb that needs one refuses with the
-# exact remedy at the moment it's actually needed, RAMstein 4ea6184's shape).
+# exact remedy at the moment it's actually needed, ramstein 4ea6184's shape).
 
 # --- hard (packaging/debian/control Depends) --------------------------------
 python3 (>= 3.8)  # the interpreter itself

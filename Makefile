@@ -39,7 +39,7 @@ SUTRA_CHECK_BINS := src/bin/coldspot src/bin/coldspotd src/bin/coldspot-healthch
 
 # SUTRA_CHECK_ARGS deliberately left unset: check-vendored-path's resolution
 # check is safe against any binary regardless of argument parsing and needs
-# no subprocess call to prove it (0.11.0's RAMstein incident -- a generic
+# no subprocess call to prove it (0.11.0's ramstein incident -- a generic
 # --help default fell through a hand-rolled arg parser into a real socket
 # call against the live daemon; sutra.mk's SUTRA_CHECK_ARGS has no default
 # for exactly this reason).
@@ -94,7 +94,7 @@ uninstall:
 # own copy of the command behind one) -- shellcheck now also runs natively
 # inside pill-ci.yml's shared job via shellcheck-files, this stays for local
 # `make lint`/`make check` and CI's ruff-only step (no pill-ci.yml input
-# covers ruff; RAMstein, the adoption reference, doesn't use it at all).
+# covers ruff; ramstein, the adoption reference, doesn't use it at all).
 lint-ruff:
 	-ruff check src/bin/coldspot src/bin/coldspotd src/bin/coldspot-update src/bin/coldspot-healthcheck 2>/dev/null || true
 
@@ -119,7 +119,7 @@ check: lint check-sutra check-vendored-path-all pycheck
 	@# extension.js: a deliberately broken copy (unclosed brace after real
 	@# code) still exits 0. Every extension.js/pill.js in the family is an
 	@# ES module by construction, so this line has never actually validated
-	@# anything (RAMstein 18d7d15, same defect, same line shape). stdin +
+	@# anything (ramstein 18d7d15, same defect, same line shape). stdin +
 	@# --input-type=module parses for real -- verified against the same
 	@# broken copy: catches it, exit 1. pill.js was never checked here at
 	@# all; it's the same kind of module, so it gets the same check.

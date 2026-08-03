@@ -16,7 +16,7 @@ let two pills run different sutra commits on one machine with nothing
 able to notice (ruling 3e44bd95). Checks all three vendored modules
 (sutra, sutra_update, sutra_xen), not just sutra.py -- phanspeed's more
 thorough form, taken as the reference for this part; the libdir itself is
-derived from sutra.__file__ (the module actually imported), RAMstein's
+derived from sutra.__file__ (the module actually imported), ramstein's
 form, rather than a hardcoded guess.
 
 Three states per module, not two: a missing anchor means an install that
