@@ -114,7 +114,18 @@ pycheck:
 
 check: lint check-sutra check-vendored-path-all pycheck
 	bash -n install.sh uninstall.sh src/bin/coldspot-stance src/bin/coldspot-bpf src/bin/coldspot-pill packaging/deploy.sh packaging/sync-signers.sh
-	node --check $(EXT)/extension.js
+	@# `node --check <path>` silently skips real syntax validation whenever
+	@# the file has a top-level import/export -- confirmed directly against
+	@# extension.js: a deliberately broken copy (unclosed brace after real
+	@# code) still exits 0. Every extension.js/pill.js in the family is an
+	@# ES module by construction, so this line has never actually validated
+	@# anything (RAMstein 18d7d15, same defect, same line shape). stdin +
+	@# --input-type=module parses for real -- verified against the same
+	@# broken copy: catches it, exit 1. pill.js was never checked here at
+	@# all; it's the same kind of module, so it gets the same check.
+	@for f in "$(EXT)/extension.js" "$(EXT)/pill.js"; do \
+	  node --input-type=module --check < "$$f" || exit 1; \
+	done
 	python3 -c "import json; json.load(open('$(EXT)/metadata.json'))"
 	python3 tests/test_units.py
 	python3 tests/test_signing.py
