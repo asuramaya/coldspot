@@ -1,13 +1,50 @@
-# Runtime (v0): python3, nftables, systemd, NetworkManager (nmcli), openssh-client
-python3
-nftables
+# coldspot — runtime dependencies, hard vs optional (RAMstein/Till's
+# packages.txt is the reference shape — operator ruling 2cd900ce).
+#
+# Pure Python standard library — no pip/PyPI dependencies at all. Everything
+# below is an EXTERNAL BINARY coldspotd/coldspot/coldspot-stance shells out
+# to, split hard (packaging/debian/control's Depends, dpkg pulls it in
+# automatically) vs optional (packaging/debian/control's Suggests — apt does
+# NOT install these by default; each verb that needs one refuses with the
+# exact remedy at the moment it's actually needed, RAMstein 4ea6184's shape).
+
+# --- hard (packaging/debian/control Depends) --------------------------------
+python3         # the interpreter itself (>= 3.8)
+systemd         # coldspotd.service, coldspot-update.timer, `systemctl` calls
 openssh-client  # `ssh-keygen -Y verify`: coldspot-update's release-signature
                 # check against release-signing/allowed_signers, and
                 # install.sh's own bootstrap verify. Absent: verify_and_install()
                 # fails closed (refuses to install, see bin/coldspot-update)
                 # rather than crashing — armed since v0.5.0, so this is load-
                 # bearing, not a nicety.
-# Optional v0 niceties (per-app talkers / live rates if present):
+nftables        # `siege` (default-drop + cgroup allowlist) and the v0
+                # `cold` egress-throttle fallback (coldspot-stance's own nft
+                # table, used whenever the eBPF core isn't loaded) both
+                # depend on it directly — two of coldspot's five stances
+                # would silently do nothing without it. Domain exemption,
+                # not an optional nicety.
+network-manager # coldspotd's own metered-link detection (metered_iface()/
+                # _link_state(), src/bin/coldspotd:71-112 — the mechanism
+                # behind auto_govern, "cold by default on the hotspot, no
+                # action needed", coldspot's headline promise) reads
+                # NetworkManager's metered flag via nmcli. Absent: both
+                # calls catch and silently fall back (guess the first wl*
+                # device, assume never-metered) — the daemon keeps running,
+                # but the flagship auto-behavior stops firing with no
+                # visible signal that it has. coldspot-stance's own nmcli
+                # use (steer's route-metric failover) is genuinely optional
+                # by contrast — gated behind an explicit verb/auto_steer
+                # config toggle — but the daemon's own load-bearing use is
+                # what decides this: domain exemption alongside nftables,
+                # not an optional nicety.
+
+# --- optional (documentation only — never wired to any coldspot verb, so
+# there is nothing here for packaging/debian/control to Suggest; listed for
+# anyone who wants an alternative live view alongside coldspot's own) -------
 #   bandwhich  nethogs
-# Build-time, v1 BPF core only:
+
+# --- build-time only, v1 eBPF core (packages.txt prose + CI ONLY — never
+# packaging/debian/control, in any tier: a compiler toolchain has no
+# business shipping to every user's desktop for a v1 feature that already
+# degrades cleanly to v0 systemd/proc accounting) ---------------------------
 #   clang  libbpf-dev  bpftool  linux-tools-common  golang  (cilium/ebpf)

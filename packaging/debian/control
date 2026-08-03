@@ -2,8 +2,7 @@ Package: coldspot
 Version: @VERSION@
 Architecture: all
 Maintainer: asuramaya <asuramaya@users.noreply.github.com>
-Depends: python3 (>= 3.8), systemd, openssh-client, nftables
-Recommends: clang, bpftool, linux-tools-common, network-manager
+Depends: python3 (>= 3.8), systemd, openssh-client, nftables, network-manager
 Section: net
 Priority: optional
 Homepage: https://github.com/asuramaya/coldspot
